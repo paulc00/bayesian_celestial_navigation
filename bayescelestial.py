@@ -18,7 +18,7 @@ class Sight:
         # process date and time into a single datetime object
         year, month, day = date.split('/')
         hour, minute, second = time.split(':')
-        self.datetime = dt.datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
+        self.datetime = dt.datetime(int(year), int(month), int(day), int(hour), int(minute), int(round(float(second))))
         self.Hs = Angle(Hs)
 
         self.WE = float(WE)
@@ -36,19 +36,28 @@ class Sight:
         self.DEC = None
         self.compute_GHA_DEC()
         print('GHA/DEC computed... {:.2f} / {:.2f}'.format(self.GHA.deg, self.DEC.deg))
+        # this method will update the corrections to the sextant sighting.
+        # it is useful to segment the function this way so that when generating theoretical sights and
+        # changing the lat/lon to be artificial values, a single method will update the rest of the Sight
+        # object's attributes accordingly
+        self.update_sight_GHADEC_and_corrections()
 
+        return
+
+    def update_sight_GHADEC_and_corrections(self):
         # compute corrections for the 'apparent altitude'
         self.dip_correction()
         self.index_correction()
         self.Ha = self.Hs + self.dip_corr + self.index_corr
-        print('Ha is {}'.format(self.Ha))
-
+        print('Ha is updated to: {}'.format(self.Ha))
         # compute the 'main correction'
         self.semidiameter_correction()
         self.get_horizontal_parallax()
         self.parallax_in_altitude_correction()
         self.atmo_correction()
         self.Ho = self.Ha + self.SD_corr + self.parallax_corr + self.atmo_corr
+        print('Ho is updated to: {}'.format(self.Ho))
+        return
 
     def get_horizontal_parallax(self):
         if self.body == 'SunLL' or self.body == 'SunUL':
@@ -59,6 +68,7 @@ class Sight:
         return
 
     def parallax_in_altitude_correction(self):
+        print('Parallax correction started. Ha is: {} LatA is {}'.format(self.Ha.deg, self.latA.deg))
         self.parallax_corr = self.HP*np.cos(self.Ha.deg/180.0*np.pi)*(1.-(np.sin(self.latA.deg/180.0*np.pi)**2.0)/297.0)
         return
 
@@ -103,10 +113,11 @@ class Sight:
         return
 
     def compute_GHA_DEC(self):
-        print('GHADEC body is {}'.format(self.body))
+        # sun
         if self.body == 'SunLL' or self.body == 'SunUL':
             s = ephem.Sun()
-
+        # insert moon here
+        # planets
         elif self.body == 'Mars':
             s = ephem.Mars()
         elif self.body == 'Venus':
@@ -119,6 +130,7 @@ class Sight:
             s = ephem.Uranus()
         elif self.body == 'Mercury':
             s = ephem.Mercury()
+        # anything else must be a star, and its body can be interpreted via the string argument in ephem.star('')
         else:
             s = ephem.star(self.body)
 
@@ -127,7 +139,6 @@ class Sight:
         date = self.datetime.strftime('%Y/%m/%d')
         time = self.datetime.strftime('%H:%M:%S')
         date_string = date + ' ' + time
-        print('Date string is: {}'.format(date_string))
         obs.date = date_string
 
         s.compute(date_string, epoch=date_string)
@@ -138,7 +149,7 @@ class Sight:
         decs = nadeg(deg)
         self.GHA = Angle(ghas, unit=u.deg)
         self.DEC = Angle(decs, unit=u.deg)
-        print('GHA and DEC are {:.3f} / {:.3f}'.format(self.GHA.deg, self.DEC.deg))
+        print('GHA and DEC for body {} are {:.3f} / {:.3f}'.format(self.body, self.GHA.deg, self.DEC.deg))
         return
 
     def est_longitude(self):
@@ -253,7 +264,7 @@ def compute_displacement(lat, lon, bearing, distance):
     phi2 = np.arcsin(np.sin(phi1) * np.cos(delta) + np.cos(phi1) * np.sin(delta) * np.cos(theta))
     lambda2 = lambda1 + np.arctan2(np.sin(theta) * np.sin(delta) * np.cos(phi1),
                                    np.cos(delta) - np.sin(phi1) * np.sin(phi2))
-
+    # outputs are both in radians
     return phi2, lambda2
 
 def get_totalsightcorrection(sights):
@@ -317,7 +328,7 @@ def Ho_predict(ghadec_vals, td, latA, lonA, DRv, DRbearing):
 
 
 def nadeg(deg):
-    # changes ephem.angel (rad) to the format for the Angle class.
+    # changes ephem.angle (RADIANS) to the format for the Angle class.
     theminus = ""
     if deg < 0:
         theminus = "-"
@@ -330,7 +341,6 @@ def get_Ho_altitudes(sights):
     ho = np.zeros(len(sights))
     for i in range(len(sights)):
         ho[i] = sights[i].Ho.deg
-
     return ho
 
 def fsight(x, ghadec_vals, td, Ho_obs):
@@ -346,23 +356,28 @@ def prior_logP(params, parrange):
     if np.any(params < parrange[0,:]) or np.any(params > parrange[1,:]):
         return -np.inf
     else:
-        bearing_prior = -(params[3]-280.0/180.0*np.pi)**2.0/(2.0*((10.0/180.0*np.pi)**2.0))
+        bearing_prior = -(params[3]-270.0/180.0*np.pi)**2.0/(2.0*((10.0/180.0*np.pi)**2.0))
         velocity_prior = -(params[2]-5.5)**2.0/(2.0*(4.0**2.0))
         return bearing_prior + velocity_prior
 
 def fsight_logp(x, parrange, ghadec_vals, td, Ho_obs):
     # get the prior probability
     logprior = prior_logP(x, parrange)
-    sigma_s = 1.0/60.0
+    if logprior == -np.inf:
+        # if out of bounds, just return -inf now
+        return -np.inf
+    sigma_s = 0.1/60.0
     y_theory = Ho_predict(ghadec_vals, td, x[0], x[1], x[2], x[3])
     y_data = Ho_obs
-    #print('y theory: {}   y_obs: {}'.format(y_theory, y_data))
-    #chi = -np.power(y_theory - y_data,2.0)/(2.0*sigma_s*sigma_s)
-    Rk = (y_theory - y_data)/sigma_s
 
+    # this form of log likelihood is standard and assumes a known error
+    chi = -np.power(y_theory - y_data,2.0)/(2.0*sigma_s*sigma_s)
+    logp = np.sum(chi) + logprior
 
-
-    return np.sum(np.log( (1.0 - np.exp(-Rk**2.0 / 2.0))/ (Rk**2.0))) + logprior
+    # this form of log likelihood is a lot more conservative w/ respect to errors
+    #Rk = (y_theory - y_data)/sigma_s
+    #logp = np.sum(np.log( (1.0 - np.exp(-Rk**2.0 / 2.0))/ (Rk**2.0))) + logprior
+    return logp
 
 def HPD_SIM(data, alpha):
     # adapted from MATLAB code originally created by Hang Qian, Iowa State University
@@ -377,13 +392,70 @@ def HPD_SIM(data, alpha):
     UB = data_sorted[idx + span]
     return LB, UB
 
+def generate_sights(sights):
+    # this function will generate a set of sights from positional data. its purpose is to provide sightings with a
+    # known amount of noise in order to test the analysis rountine's output
+
+    # compute the timedelta array & displacements in lat/lon based on the nominal bearing and velocity
+    td = get_timedeltas(sights)
+    # compute the nominal distances, based on the first entry's velocity/bearing
+    DRv = sights[0].DRv
+    DRbearing = sights[0].DRbearing.rad
+    latA = sights[0].latA.radian
+    lonA = sights[0].lonA.radian
+    darray = compute_distances(td, DRv)
+    # now compute displacements
+
+    # compute the lat/lon pairs for each time
+    lat_in = np.ones(len(sights)) * latA
+    lon_in = np.ones(len(sights)) * lonA
+
+    # compute the displacement of lat/lon along a great circle, given the initial point, bearing, and distance travelled
+    phi2, lambda2 = compute_displacement(lat_in, lon_in, DRbearing, darray)  # args should be in radians
+
+    # write the new lat/lon values into the respective sights
+    for i in range(len(sights)):
+        sights[i].latA = Angle(phi2[i], unit=u.radian)
+        sights[i].lonA = Angle(lambda2[i], unit=u.radian)
+
+    # get an array of GHA and DEC vals for each sighting
+    ghadec_vals = get_GHADEC_arrays(sights)
+
+    # compute the Hs values for each lat/lon pair and sighting
+    Hc = compute_Hc_fast(phi2, lambda2, ghadec_vals[:, 0] / 180.0 * np.pi,
+                         ghadec_vals[:, 1] / 180.0 * np.pi)  # everything must be in radians
+    # get the array of corrections, so we can convert to predicted sextant readings -- these are based on the approximate
+    # lat/lon values, but as long as the guess is remotely correct, should be more than accurate.
+    corr_vals = get_totalsightcorrection(sights)  # in radians
+
+    # take the true altitudes and subtracted the correction estimates to get what should be observed on a sextant reading
+    est_Hs = (Hc - corr_vals) * 180.0 / np.pi  # convert to degrees
+
+    # now update the sights to have sightings at the values we calculated
+    noise_mag = 0.5/60.0 # in degrees
+    for i in range(len(sights)):
+        print('New angle is: {}'.format(nadeg(est_Hs[i]/180*np.pi)))
+        sights[i].Hs = Angle(est_Hs[i] + np.random.randn()*noise_mag, unit=u.deg)
+        sights[i].update_sight_GHADEC_and_corrections()
+
+    return sights
+
+def print_sights(sights):
+    print('----------Sight Database----------')
+    for i in range(len(sights)):
+        print('SIGHT {:d} --- Body: {}'.format(i, sights[i].body))
+        print('Hs: {} Ha: {} Ho: {}'.format(nadeg(sights[i].Hs.rad), nadeg(sights[i].Ha.rad), nadeg(sights[i].Ho.rad)))
+        print('')
+
+    return
+
 
 if __name__ == "__main__":
     # 'database' of sightings for reduction into a single lat/long pair + course speed/heading
 
     db_sights = """\
-    Venus,2016/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d50m
-    Sirius,2016/02/21,20:25:27,45d32.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d51m
+    Venus,2015/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d50m
+    Sirius,2015/02/21,20:25:27,45d32.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d51m
     SunLL,2015/02/22,12:11:17,51d07.3m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d7m
     SunLL,2015/02/22,12:12:13,51d22.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d7m
     SunLL,2015/02/22,12:13:08,51d29.8m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d7m
@@ -398,7 +470,14 @@ if __name__ == "__main__":
         Venus,2016/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d50m
         Sirius,2016/02/21,20:25:27,45d32.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d51m
         """
-
+    db_sights = """\
+            Arcturus,2015/02/23,07:54:42,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+            Saturn,2015/02/23,8:04:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+            Saturn,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+            Izar,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+            Kochab,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+            Vega,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+            """
     sights = db_sights_preprocess(db_sights)
     print(sights)
 
@@ -419,6 +498,10 @@ if __name__ == "__main__":
 
     print(est_Hs_out)
 
+    # change the sights to be theoretically perfect (plus a small amount of random noise)
+    print_sights(sights)
+    sights = generate_sights(sights)
+    print_sights(sights)
 
     # now get the GHA/DEC values and store them, so we don't have to keep looking them up
     ghadec_vals = get_GHADEC_arrays(sights)
@@ -438,12 +521,12 @@ if __name__ == "__main__":
 
     # start with MCMC simulation
     parrange = np.zeros((2,4))
-    parrange[0,:] = np.array([sights[0].latA.rad-0.5/180*np.pi, sights[0].lonA.rad-0.5/180*np.pi, 0.0, 200/180.0*np.pi])
-    parrange[1, :] = np.array([sights[0].latA.rad + 0.5 / 180 * np.pi, sights[0].lonA.rad + 0.5 / 180 * np.pi, 14, 360/180.0*np.pi])
+    parrange[0,:] = np.array([sights[0].latA.rad-5/180*np.pi, sights[0].lonA.rad-5/180*np.pi, 0.0, 200/180.0*np.pi])
+    parrange[1, :] = np.array([sights[0].latA.rad + 5 / 180 * np.pi, sights[0].lonA.rad + 5/ 180 * np.pi, 14, 360/180.0*np.pi])
 
     # prepare MCMC walkers using emcee
 
-    ndim, nwalkers = 4, 30
+    ndim, nwalkers = 4, 44
 
     # create walkers in random positions within the hypercube of feasible points
     p0 = [np.random.rand(ndim) * (parrange[1, :] - parrange[0, :]) + parrange[0, :] for i in range(nwalkers)]
@@ -455,35 +538,36 @@ if __name__ == "__main__":
         uidx = p0[i] > parrange[1, :]
         p0[i][uidx] = parrange[1, uidx]
 
-    print(ghadec_vals)
-    print(td)
-    print(Ho_obs)
+
     fslambda = lambda x: fsight_logp(x, parrange, ghadec_vals, td, Ho_obs)
-    print(fslambda(x0))
-    print('Now predict step by step...')
-    DRv = x0[2]
-    darray = compute_distances(td, DRv)
 
-    # compute the lat/lon pairs for each time
-    lat_in = np.ones(len(sights)) * x0[0]
-    lon_in = np.ones(len(sights)) * x0[1]
 
-    # compute the displacement of lat/lon along a great circle, given the initial point, bearing, and distance travelled
-    phi2, lambda2 = compute_displacement(lat_in, lon_in, x0[3], darray)  # args should be in radians
-    print('phi 2 and lambda2: {} and {}'.format(phi2*180.0/np.pi,lambda2*180/np.pi))
-    # compute the Hs values for each lat/lon pair and sighting
-    Hc = compute_Hc_fast(phi2, lambda2, ghadec_vals[:, 0] / 180.0 * np.pi,
-                         ghadec_vals[:, 1] / 180.0 * np.pi)  # everything must be in radians
-    print('HC is {}'.format(Hc*180.0/np.pi))
-    # take the true altitudes and subtracted the correction estimates to get what should be observed on a sextant reading
-    Ho = Hc * 180.0 / np.pi  # convert to degrees
+    # print('Now predict step by step...')
+    # DRv = x0[2]
+    # darray = compute_distances(td, DRv)
+    #
+    # # compute the lat/lon pairs for each time
+    # lat_in = np.ones(len(sights)) * x0[0]
+    # lon_in = np.ones(len(sights)) * x0[1]
+    #
+    # # compute the displacement of lat/lon along a great circle, given the initial point, bearing, and distance travelled
+    # phi2, lambda2 = compute_displacement(lat_in, lon_in, x0[3], darray)  # args should be in radians
+    # print('phi 2 and lambda2: {} and {}'.format(phi2*180.0/np.pi,lambda2*180/np.pi))
+    # # compute the Hs values for each lat/lon pair and sighting
+    # Hc = compute_Hc_fast(phi2, lambda2, ghadec_vals[:, 0] / 180.0 * np.pi,
+    #                      ghadec_vals[:, 1] / 180.0 * np.pi)  # everything must be in radians
+    # print('HC is {}'.format(Hc*180.0/np.pi))
+    #
+    #
+    # # take the true altitudes and subtracted the correction estimates to get what should be observed on a sextant reading
+    # Ho = Hc * 180.0 / np.pi  # convert to degrees
     sampler = emcee.EnsembleSampler(nwalkers, ndim, fslambda)
     # burnin using emcee
-    [pos, lnprobs, rstate] = sampler.run_mcmc(p0, 3000)
+    [pos, lnprobs, rstate] = sampler.run_mcmc(p0, 500)
 
     # sample from the posterior using emcee
     sampler.reset()
-    [pos, lnprobs, rstate] = sampler.run_mcmc(pos, 3000, thin=20)
+    [pos, lnprobs, rstate] = sampler.run_mcmc(pos, 500, thin=2)
 
 
     fig, axes = plt.subplots(7, 1, sharex=True, figsize=(8, 9))
@@ -545,30 +629,46 @@ if __name__ == "__main__":
     plt.show()
 
     # iterate through the hamiltonian parameters of interest and spit out the estimates/intervals
-    param_names = ['Lat_in', 'Lon_in', 'Velocity', 'Bearing']
-    for ij, elem in enumerate([0, 1, 2, 3]):
-        if ij in [0, 1, 3]:
-            multiplier = 180.0/np.pi
-        else:
-            multiplier = 1.0
 
-        LB, UB = HPD_SIM(sampler.chain[:, :, elem].flatten()*multiplier, 0.05)
-        est_mean = np.mean(sampler.chain[:, :, elem].flatten()*multiplier)
-        est_interval = np.max([est_mean - LB, UB - est_mean])
-        print('----------Parameter {}----------'.format(param_names[ij]))
-        print('{} = {:.3f} +- {:.3f}'.format(param_names[ij], est_mean, est_interval))
-        print('2x std is {:.3f}'.format(2.0 * np.std(sampler.chain[:, :, elem].flatten()*multiplier)))
+
+    LB, UB = HPD_SIM(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi, 0.05)
+    est_mean = np.mean(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
+    est_interval = np.max([est_mean - LB, UB - est_mean])
+    print('----------Parameter Lat_In----------')
+    print('{} = {} +- {}'.format('lat in', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
+    print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 0].flatten()))))
+
+    LB, UB = HPD_SIM(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi, 0.05)
+    est_mean = np.mean(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
+    est_interval = np.max([est_mean - LB, UB - est_mean])
+    print('----------Parameter Lon_In----------')
+    print('{} = {} +- {}'.format('lon in', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
+    print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 1].flatten()))))
+
+    LB, UB = HPD_SIM(sampler.chain[:, :, 2].flatten(), 0.05)
+    est_mean = np.mean(sampler.chain[:, :, 2].flatten())
+    est_interval = np.max([est_mean - LB, UB - est_mean])
+    print('----------Parameter Velocity----------')
+    print('{} = {} +- {}'.format('lon in', est_mean, est_interval ))
+    print('2x std is {}'.format(2.0 * np.std(sampler.chain[:, :, 2].flatten())))
+
+    LB, UB = HPD_SIM(sampler.chain[:, :, 3].flatten() * 180.0 / np.pi, 0.05)
+    est_mean = np.mean(sampler.chain[:, :, 3].flatten() * 180.0 / np.pi)
+    est_interval = np.max([est_mean - LB, UB - est_mean])
+    print('----------Parameter Bearing----------')
+    print('{} = {} +- {}'.format('bearing', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
+    print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 3].flatten()))))
 
     LB, UB = HPD_SIM(chain_lat.flatten()*180.0/np.pi, 0.05)
     est_mean = np.mean(chain_lat.flatten()*180.0/np.pi)
     est_interval = np.max([est_mean - LB, UB - est_mean])
     print('----------Parameter Lat_Out----------')
-    print('{} = {:.3f} +- {:.3f}'.format('lat out', est_mean, est_interval))
-    print('2x std is {:.3f}'.format(2.0 * np.std(chain_lat.flatten()*180.0/np.pi)))
+    print('{} = {} +- {}'.format('lat out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
+    print('2x std is {}'.format(nadeg(2.0*np.std(chain_lat.flatten()))))
 
     LB, UB = HPD_SIM(chain_lon.flatten()*180.0/np.pi, 0.05)
     est_mean = np.mean(chain_lon.flatten()*180.0/np.pi)
     est_interval = np.max([est_mean - LB, UB - est_mean])
     print('----------Parameter Lon_Out----------')
-    print('{} = {:.3f} +- {:.3f}'.format('lon out', est_mean, est_interval))
-    print('2x std is {:.3f}'.format(2.0 * np.std(chain_lon.flatten()*180.0/np.pi)))
+    print('{} = {} +- {}'.format('lon out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
+    print('2x std is {}'.format(nadeg(2.0*np.std(chain_lon.flatten()))))
