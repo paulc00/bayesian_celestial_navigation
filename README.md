@@ -2,7 +2,15 @@
 
 This package uses Markov Chain Monte Carlo methods to infer a positional fix using readings from a marine sextant.
 
-I created this project to teach myself basic celestial navigation techniques and to solve a set of celestial navigation exercises on a blog I found: [Celestial Navigation Practice Problems](https://celestialnavproblems.wordpress.com)
+I created this project to teach myself basic celestial navigation techniques well enough to solve a set of celestial navigation exercises on a blog I found: [Celestial Navigation Practice Problems](https://celestialnavproblems.wordpress.com)
+
+Traditionally, a line of position (LOP) is calculated from a sextant sighting that has been corrected for various errors (e.g. atmospheric refraction). A single measurement determines a circle on the Earth's surface on which the observer must lie, and over short distances, this circle is simply a line. If two different LOPs from two different celestial objects can be determined, then the observer should lie at their intersection point. This is called a positional fix. If only one measurement can be taken (e.g. during the day, when only the sun is visible) or the measurements are taken more than a few tens of minutes apart, a second kind of fix called a `running fix' can be used to estimate the observer's position. In this scenario, an estimate of the ship's position based on dead reckoning, combined with the available LOPs, can produce a rough estimate of the observer's position.
+
+Mainly, I wanted to get a very quantitative picture of the precision limits of celestial navigation. Specifically:
+
+* Can a series of Sun sights be used with only weak prior information to obtain a good fix of lattitude *and* longitude?
+* What does the posterior distribution of a positional fix using two celestial objects look like? Nominally, it should look like a sort of "cross" where the lines of position cross -- I'd like to visualize that.
+* Given a pair of stars for such a positional fix, what is the relation between how precise one can measure angle with a sextant and how precisely one's location can be determined from that information?
 
 While writing this code, I found Rodger E. Farley's '[The Armchair Celestial Navigator](http://www.dacust.com/navigation/pdf/ArmchairCelestialNavigator.pdf)' to be a great practical resource for navigating via sextant.
 
