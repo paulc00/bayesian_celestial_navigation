@@ -14,6 +14,7 @@ import copy
 from mpl_toolkits.basemap import Basemap
 import matplotlib.cm as cm
 import matplotlib.mlab as mlab
+import cProfile, pstats, io
 
 
 
@@ -360,7 +361,7 @@ def prior_logP(params, parrange):
         return -np.inf
     else:
         bearing_prior = -(params[3]-270.0/180.0*np.pi)**2.0/(2.0*((10.0/180.0*np.pi)**2.0))
-        velocity_prior = -(params[2]-5.5)**2.0/(2.0*(4.0**2.0))
+        velocity_prior = -(params[2]-5.5)**2.0/(2.0*(2.0**2.0))
         return bearing_prior + velocity_prior
 
 def fsight_logp(x, parrange, ghadec_vals, td, Ho_obs, sigma_s):
@@ -502,13 +503,13 @@ def analyze_sights(sights, parrange):
 
     # burnin/sample using emcee
     N_burnin = 2000
-    N_final = 1000
+    N_final = 2000
     print('Starting burnin of {:d} samples...'.format(N_burnin))
     [pos, lnprobs, rstate] = sampler.run_mcmc(p0, N_burnin)
     print('Burn-in complete. Starting final MCMC run of {:d} samples...'.format(N_final))
     # sample from the posterior using emcee
     sampler.reset()
-    [pos, lnprobs, rstate] = sampler.run_mcmc(pos, 1000, thin=4)
+    [pos, lnprobs, rstate] = sampler.run_mcmc(pos, N_final, thin=10)
 
     return pos, lnprobs, rstate, sampler
 
@@ -518,16 +519,28 @@ def plot_position_estimate_and_contours(sights, sampler):
     mean_lon = np.mean(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
     std_lat = np.std(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
     std_lon = np.std(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
+    # compute a lat/lon range for the map plot, with a minimum span of +- 45 arcminutes
+    lat_span = np.max(np.array((std_lat * 5, 45 / 60.0)))
+    lon_span = np.max(np.array((std_lon * 5, 45 / 60.0)))
+
+    # adjust the aspect ratio for a better plot
+    if lat_span/lon_span > 2.0:
+        # lattitude is much greater than longitude -- adjust longitude to be at least half the lattitude
+        lon_span = lat_span/2.0
+    if lon_span/lat_span > 2.0:
+        # longitude is much greater than lattitude-- adjust lattitude to be at least half the longitude
+        lat_span = lon_span/2.0
 
     # miller projection
     map = Basemap(projection='mill',
-                  llcrnrlat=mean_lat - 45 / 60.0,
-                  urcrnrlat=mean_lat + 45 / 60.0,
-                  llcrnrlon=mean_lon - 45 / 60.0,
-                  urcrnrlon=mean_lon + 45 / 60.0
+                  llcrnrlat=mean_lat - lat_span,
+                  urcrnrlat=mean_lat + lat_span,
+                  llcrnrlon=mean_lon - lon_span,
+                  urcrnrlon=mean_lon + lon_span
                   )
     # plot coastlines, draw label meridians and parallels.
     map.drawcoastlines()
+
     map.drawparallels(np.arange(np.floor(mean_lat)-1, np.ceil(mean_lat) + 2, 1), labels=[1, 0, 0, 0])
     map.drawmeridians(np.arange(np.floor(mean_lon)-1, np.ceil(mean_lon) + 2, 1), labels=[0, 0, 0, 1])
     # fill continents 'coral' (with zorder=0), color wet areas 'aqua'
@@ -535,10 +548,11 @@ def plot_position_estimate_and_contours(sights, sampler):
     map.fillcontinents(color='coral', lake_color='aqua')
     # use a Gaussian KDE
     gkde = scipy.stats.gaussian_kde(
-        [sampler.chain[:, :, 1].flatten() * 180.0 / np.pi, sampler.chain[:, :, 0].flatten() * 180.0 / np.pi])
+        [sampler.chain[:, :, 1].flatten() * 180.0 / np.pi, sampler.chain[:, :, 0].flatten() * 180.0 / np.pi],
+        bw_method=0.4)
     # create a grid
-    lonarray = np.linspace(mean_lon - 6 * std_lon, mean_lon + 6 * std_lon, 300)
-    latarray = np.linspace(mean_lat - 6 * std_lat, mean_lat + 6 * std_lat, 300)
+    lonarray = np.linspace(mean_lon - 6 * std_lon, mean_lon + 6 * std_lon, 200)
+    latarray = np.linspace(mean_lat - 6 * std_lat, mean_lat + 6 * std_lat, 200)
     lons, lats = np.meshgrid(lonarray, latarray)
 
     # find the 68% and 95% scores at percentiles
@@ -619,7 +633,8 @@ def positional_fix_vs_sextant_error(input_sights):
 
 if __name__ == "__main__":
     # 'database' of sightings for reduction into a single lat/long pair + course speed/heading
-
+    pr = cProfile.Profile()
+    pr.enable()
     # 21-Feb-2015
     db_sights = """\
         Venus,2015/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d4m,-25d36m
@@ -664,6 +679,29 @@ if __name__ == "__main__":
             SunLL,2015/02/25,14:55:31,63d35.4m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
             """
 
+    # 26-Feb-2015
+    db_sights = """\
+            Altair,2015/02/26,08:25:16,38d15.7m,0.0,2.0m,3.05,25,1010,5.5,270d,16d21m,-37d0m
+            """
+    # 26-Feb-2015 -- using dead reckoning with a subsequent sun sight to determine this position
+    db_sights = """\
+            Altair,2015/02/26,08:25:16,38d15.7m,0.0,2.0m,3.05,25,1010,5.5,270d,16d21m,-37d0m
+            SunUL,2015/02/27,14:48:17,65d58.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d21m,-37d0m
+            """
+    # 27-Feb-2015 -- using only the sight from 27 Feb (i.e. no dead reckoning)
+    db_sights = """\
+            SunUL,2015/02/27,14:48:17,65d58.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d05m,-40d8m
+            """
+    # 28-Feb-2015
+    db_sights = """\
+            SunLL,2015/02/28,12:57:13,50d4.7m,0.0,1.9m,3.05,25,1010,6,270d,16d48m,-42d36m
+            SunLL,2015/02/28,16:27:08,57d56.4m,0.0,1.8m,3.05,25,1010,6,270d,16d48m,-42d36m
+            """
+    # 01-Mar-2015
+    db_sights = """\
+            SunUL,2015/03/01,14:00:05,60d1.7m,0.0,2.0m,3.66,25,1010,6,270d,16d48m,-45d8m
+            SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d8m
+            """
 
     # db_sights = """\
     #         Arcturus,2015/02/23,07:54:42,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
@@ -842,3 +880,9 @@ if __name__ == "__main__":
     # print('----------Parameter Lon_Out----------')
     # print('{} = {} +- {}'.format('lon out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
     # print('2x std is {}'.format(nadeg(2.0*np.std(chain_lon.flatten()))))
+    pr.disable()
+    s = io.StringIO()
+    sortby = 'cumulative'
+    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+    ps.print_stats()
+    print(s.getvalue())
