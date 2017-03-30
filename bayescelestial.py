@@ -528,8 +528,8 @@ def plot_position_estimate_and_contours(sights, sampler):
                   )
     # plot coastlines, draw label meridians and parallels.
     map.drawcoastlines()
-    map.drawparallels(np.arange(np.floor(mean_lat), np.ceil(mean_lat) + 1, 1), labels=[1, 0, 0, 0])
-    map.drawmeridians(np.arange(np.floor(mean_lon), np.ceil(mean_lon) + 1, 1), labels=[0, 0, 0, 1])
+    map.drawparallels(np.arange(np.floor(mean_lat)-1, np.ceil(mean_lat) + 2, 1), labels=[1, 0, 0, 0])
+    map.drawmeridians(np.arange(np.floor(mean_lon)-1, np.ceil(mean_lon) + 2, 1), labels=[0, 0, 0, 1])
     # fill continents 'coral' (with zorder=0), color wet areas 'aqua'
     map.drawmapboundary(fill_color='aqua')
     map.fillcontinents(color='coral', lake_color='aqua')
@@ -542,22 +542,24 @@ def plot_position_estimate_and_contours(sights, sampler):
     lons, lats = np.meshgrid(lonarray, latarray)
 
     # find the 68% and 95% scores at percentiles
-    sarray = scipy.stats.scoreatpercentile(gkde(gkde.resample(1000)), [5, 32])
+    sarray = scipy.stats.scoreatpercentile(gkde(gkde.resample(1000)), [1, 5, 32])
 
     z = np.array(gkde.evaluate([lons.flatten(), lats.flatten()])).reshape(lons.shape)
     x, y = map(lons, lats)
 
-    map.contour(x, y, z, sarray, linewidths=3, alpha=1.0, colors='k')
+    map.contour(x, y, z, sarray, linewidths=2, alpha=1.0, colors='k')
     # convert lat/lons to x,y points
     # x, y = map(sampler.chain[0:100, 0:20, 1].flatten() * 180.0 / np.pi, sampler.chain[0:100, 0:20, 0].flatten() * 180.0 / np.pi)
     # map.scatter(x, y, 3, marker='o', color='k')
-    x, y = map(-(25.0 + 50.0 / 60.0), 17.0)
-    map.scatter(x, y, s=70, marker='o', color='r')
+    # plot the true value, which relies in the first Sight's nominal lon/lat
+    x, y = map(sights[0].lonA.deg, sights[0].latA.deg)
+    map.scatter(x, y, s=50, marker='o', color='r')
     plt.title('Position at {} is {} ± {}  /  {} ± {} '.format(sights[0].datetime.strftime("%Y/%m/%d -- %H:%M:%S"),
                                                                 nadeg(mean_lat / 180 * np.pi),
                                                                 nadeg(2.0 * std_lat / 180 * np.pi),
                                                                 nadeg(mean_lon / 180 * np.pi),
-                                                                nadeg(2.0 * std_lon / 180 * np.pi)))
+                                                                nadeg(2.0 * std_lon / 180 * np.pi)),
+              fontsize=12)
     plt.show()
     return
 
@@ -634,6 +636,33 @@ if __name__ == "__main__":
     SunLL,2015/02/22,14:22:23,62d34.8m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
     SunLL,2015/02/22,14:23:11,62d36.4m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
     """
+
+    # 24-Feb-2015
+    db_sights = """\
+        SunLL,2015/02/24,12:11:13,48d7.5m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
+        SunLL,2015/02/24,12:12:15,48d22.3m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
+        SunLL,2015/02/24,12:13:08,48d29.9m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
+        SunUL,2015/02/24,16:08:15,54d16.8m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+        SunUL,2015/02/24,16:09:27,54d4.2m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+        SunUL,2015/02/24,16:11:05,53d46.0m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+        """
+
+    # 25-Feb-2015
+    db_sights = """\
+            SunLL,2015/02/25,14:20:47,63d53.4m,0.0,1.8m,3.05,25,1010,5.5,270d,16d38m,-35d24m
+            SunLL,2015/02/25,14:26:40,64d1.3m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:29:08,64d4.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:30:45,64d7.1m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:32:16,64d7.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:33:27,64d7.0m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:34:39,64d7.5m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:37:46,64d7.1m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:40:13,64d4.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:42:53,64d1.7m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:44:16,64d1.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:48:26,63d54m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            SunLL,2015/02/25,14:55:31,63d35.4m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+            """
 
 
     # db_sights = """\
