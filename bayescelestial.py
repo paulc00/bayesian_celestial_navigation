@@ -1,4 +1,5 @@
 import datetime as dt
+import scipy.stats
 from astropy import units as u
 from astropy.coordinates import Angle
 from astropy.coordinates import Longitude
@@ -7,8 +8,14 @@ import numpy as np
 import math
 import scipy.optimize
 import emcee
-import matplotlib
+from datetime import datetime
 import matplotlib.pyplot as plt
+import copy
+from mpl_toolkits.basemap import Basemap
+import matplotlib.cm as cm
+import matplotlib.mlab as mlab
+
+
 
 # class constructor, for future use -- not implemented yet. will be much cleaner.
 class Sight:
@@ -35,28 +42,25 @@ class Sight:
         self.GHA = None
         self.DEC = None
         self.compute_GHA_DEC()
-        print('GHA/DEC computed... {:.2f} / {:.2f}'.format(self.GHA.deg, self.DEC.deg))
         # this method will update the corrections to the sextant sighting.
         # it is useful to segment the function this way so that when generating theoretical sights and
         # changing the lat/lon to be artificial values, a single method will update the rest of the Sight
         # object's attributes accordingly
-        self.update_sight_GHADEC_and_corrections()
+        self.update_sight_corrections()
 
         return
 
-    def update_sight_GHADEC_and_corrections(self):
+    def update_sight_corrections(self):
         # compute corrections for the 'apparent altitude'
         self.dip_correction()
         self.index_correction()
         self.Ha = self.Hs + self.dip_corr + self.index_corr
-        print('Ha is updated to: {}'.format(self.Ha))
         # compute the 'main correction'
         self.semidiameter_correction()
         self.get_horizontal_parallax()
         self.parallax_in_altitude_correction()
         self.atmo_correction()
         self.Ho = self.Ha + self.SD_corr + self.parallax_corr + self.atmo_corr
-        print('Ho is updated to: {}'.format(self.Ho))
         return
 
     def get_horizontal_parallax(self):
@@ -68,7 +72,6 @@ class Sight:
         return
 
     def parallax_in_altitude_correction(self):
-        print('Parallax correction started. Ha is: {} LatA is {}'.format(self.Ha.deg, self.latA.deg))
         self.parallax_corr = self.HP*np.cos(self.Ha.deg/180.0*np.pi)*(1.-(np.sin(self.latA.deg/180.0*np.pi)**2.0)/297.0)
         return
 
@@ -360,23 +363,30 @@ def prior_logP(params, parrange):
         velocity_prior = -(params[2]-5.5)**2.0/(2.0*(4.0**2.0))
         return bearing_prior + velocity_prior
 
-def fsight_logp(x, parrange, ghadec_vals, td, Ho_obs):
+def fsight_logp(x, parrange, ghadec_vals, td, Ho_obs, sigma_s):
     # get the prior probability
     logprior = prior_logP(x, parrange)
     if logprior == -np.inf:
         # if out of bounds, just return -inf now
         return -np.inf
-    sigma_s = 0.1/60.0
+    #sigma_s = 0.5/60.0
     y_theory = Ho_predict(ghadec_vals, td, x[0], x[1], x[2], x[3])
     y_data = Ho_obs
 
-    # this form of log likelihood is standard and assumes a known error
-    chi = -np.power(y_theory - y_data,2.0)/(2.0*sigma_s*sigma_s)
-    logp = np.sum(chi) + logprior
+    ## this form of log likelihood is standard and assumes a known error
+    #chi = -np.power(y_theory - y_data,2.0)/(2.0*sigma_s*sigma_s)
+    #logp = np.sum(chi) + logprior
 
-    # this form of log likelihood is a lot more conservative w/ respect to errors
+    ## this form of log likelihood is a lot more conservative w/ respect to errors
     #Rk = (y_theory - y_data)/sigma_s
     #logp = np.sum(np.log( (1.0 - np.exp(-Rk**2.0 / 2.0))/ (Rk**2.0))) + logprior
+
+    # this is the good data/bad data model of Box and Tiao (1978), from Sivia's 'Data Analysis'
+    beta = 0.2 # calibrated from initial data
+    gamma = 4.8 # calibrated from initial data
+    Rk = (y_theory - y_data) / sigma_s
+    logp = np.sum(np.log(beta/gamma*np.exp(-np.power(Rk,2.0)/(2.0*np.power(gamma,2.0))) +
+                         (1-beta)*np.exp(-np.power(Rk,2.0)/2))) + logprior
     return logp
 
 def HPD_SIM(data, alpha):
@@ -432,76 +442,234 @@ def generate_sights(sights):
     est_Hs = (Hc - corr_vals) * 180.0 / np.pi  # convert to degrees
 
     # now update the sights to have sightings at the values we calculated
-    noise_mag = 0.5/60.0 # in degrees
     for i in range(len(sights)):
-        print('New angle is: {}'.format(nadeg(est_Hs[i]/180*np.pi)))
-        sights[i].Hs = Angle(est_Hs[i] + np.random.randn()*noise_mag, unit=u.deg)
-        sights[i].update_sight_GHADEC_and_corrections()
+        sights[i].Hs = Angle(est_Hs[i], unit=u.deg)
+        sights[i].update_sight_corrections()
 
     return sights
 
 def print_sights(sights):
     print('----------Sight Database----------')
     for i in range(len(sights)):
-        print('SIGHT {:d} --- Body: {}'.format(i, sights[i].body))
-        print('Hs: {} Ha: {} Ho: {}'.format(nadeg(sights[i].Hs.rad), nadeg(sights[i].Ha.rad), nadeg(sights[i].Ho.rad)))
+        print('SIGHT {:d} --- Body: {} --- Hs: {} Ha: {} Ho: {}'.format(i, sights[i].body, nadeg(sights[i].Hs.rad), nadeg(sights[i].Ha.rad), nadeg(sights[i].Ho.rad)))
         print('')
 
     return
+
+def add_sighting_noise(sights, noise):
+    # sights -- list of Sight objects
+    # noise -- noise magnitude as a scalar, in units of arcseconds
+    for j in range(len(sights)):
+        sights[j].Hs = Angle(sights[j].Hs.deg + np.random.randn() * noise / 3600.0, unit=u.deg)
+        sights[j].update_sight_corrections()
+    return
+
+def analyze_sights(sights, parrange):
+    # prepare the parameter boundaries
+    # start with MCMC simulation
+
+
+    # prepare MCMC walkers using emcee
+
+    ndim, nwalkers = 4, 64
+
+    # create walkers in random positions within the hypercube of feasible points
+    p0 = [np.random.rand(ndim) * (parrange[1, :] - parrange[0, :]) + parrange[0, :] for i in range(nwalkers)]
+
+    # coerce any values outside of the bounds to the boundary
+    for k, p in enumerate(p0):
+        lidx = p0[k] < parrange[0, :]
+        p0[k][lidx] = parrange[0, lidx]
+        uidx = p0[k] > parrange[1, :]
+        p0[k][uidx] = parrange[1, uidx]
+
+    # now get the GHA/DEC values and store them, so we don't have to keep looking them up
+    ghadec_vals = get_GHADEC_arrays(sights)
+
+    # get the timedeltas and store them, so we don't have to keep looking them up
+    td = get_timedeltas(sights)
+
+    # get the observed altitudes
+    Ho_obs = get_Ho_altitudes(sights)
+
+    # weight each point by the known noise uncertainty
+    #sigma_s = noise / 60.0 / 60.0
+    sigma_s = 2.3 / 60.0
+    fslambda = lambda x: fsight_logp(x, parrange, ghadec_vals, td, Ho_obs, sigma_s)
+
+    # set up the sampler
+    sampler = emcee.EnsembleSampler(nwalkers, ndim, fslambda)
+
+    # burnin/sample using emcee
+    N_burnin = 2000
+    N_final = 1000
+    print('Starting burnin of {:d} samples...'.format(N_burnin))
+    [pos, lnprobs, rstate] = sampler.run_mcmc(p0, N_burnin)
+    print('Burn-in complete. Starting final MCMC run of {:d} samples...'.format(N_final))
+    # sample from the posterior using emcee
+    sampler.reset()
+    [pos, lnprobs, rstate] = sampler.run_mcmc(pos, 1000, thin=4)
+
+    return pos, lnprobs, rstate, sampler
+
+def plot_position_estimate_and_contours(sights, sampler):
+    # begin plotting
+    mean_lat = np.mean(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
+    mean_lon = np.mean(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
+    std_lat = np.std(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
+    std_lon = np.std(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
+
+    # miller projection
+    map = Basemap(projection='mill',
+                  llcrnrlat=mean_lat - 45 / 60.0,
+                  urcrnrlat=mean_lat + 45 / 60.0,
+                  llcrnrlon=mean_lon - 45 / 60.0,
+                  urcrnrlon=mean_lon + 45 / 60.0
+                  )
+    # plot coastlines, draw label meridians and parallels.
+    map.drawcoastlines()
+    map.drawparallels(np.arange(np.floor(mean_lat), np.ceil(mean_lat) + 1, 1), labels=[1, 0, 0, 0])
+    map.drawmeridians(np.arange(np.floor(mean_lon), np.ceil(mean_lon) + 1, 1), labels=[0, 0, 0, 1])
+    # fill continents 'coral' (with zorder=0), color wet areas 'aqua'
+    map.drawmapboundary(fill_color='aqua')
+    map.fillcontinents(color='coral', lake_color='aqua')
+    # use a Gaussian KDE
+    gkde = scipy.stats.gaussian_kde(
+        [sampler.chain[:, :, 1].flatten() * 180.0 / np.pi, sampler.chain[:, :, 0].flatten() * 180.0 / np.pi])
+    # create a grid
+    lonarray = np.linspace(mean_lon - 6 * std_lon, mean_lon + 6 * std_lon, 300)
+    latarray = np.linspace(mean_lat - 6 * std_lat, mean_lat + 6 * std_lat, 300)
+    lons, lats = np.meshgrid(lonarray, latarray)
+
+    # find the 68% and 95% scores at percentiles
+    sarray = scipy.stats.scoreatpercentile(gkde(gkde.resample(1000)), [5, 32])
+
+    z = np.array(gkde.evaluate([lons.flatten(), lats.flatten()])).reshape(lons.shape)
+    x, y = map(lons, lats)
+
+    map.contour(x, y, z, sarray, linewidths=3, alpha=1.0, colors='k')
+    # convert lat/lons to x,y points
+    # x, y = map(sampler.chain[0:100, 0:20, 1].flatten() * 180.0 / np.pi, sampler.chain[0:100, 0:20, 0].flatten() * 180.0 / np.pi)
+    # map.scatter(x, y, 3, marker='o', color='k')
+    x, y = map(-(25.0 + 50.0 / 60.0), 17.0)
+    map.scatter(x, y, s=70, marker='o', color='r')
+    plt.title('Position at {} is {} ± {}  /  {} ± {} '.format(sights[0].datetime.strftime("%Y/%m/%d -- %H:%M:%S"),
+                                                                nadeg(mean_lat / 180 * np.pi),
+                                                                nadeg(2.0 * std_lat / 180 * np.pi),
+                                                                nadeg(mean_lon / 180 * np.pi),
+                                                                nadeg(2.0 * std_lon / 180 * np.pi)))
+    plt.show()
+    return
+
+def positional_fix_vs_sextant_error(input_sights):
+    # This function will execute a loop of Bayesian inference simulations on different sets of Sights lists that have
+    # added noise
+    #
+    # sights - should be an input list of Sight objects
+    #
+
+    # array of noise magnitudes, in arcseconds
+    noise_magnitudes = np.array((5.0, 30.0, 60.0, 120.0, 240.0))
+    noise_magnitudes = np.array((30.0, 60.0, 120.0, 180.0))
+    noise_magnitudes = np.array((5.0,))
+    # prepare an array to store the results
+    results = np.zeros((np.size(noise_magnitudes), 5))
+
+    for i in range(np.size(noise_magnitudes)):
+        noise = noise_magnitudes[i]
+
+        # deep copy the original list of Sights
+        sights = copy.deepcopy(input_sights)
+        # now iterate through each sight, and add the prescribed amount of noise to the sextant reading
+        print('Printing sights before adding noise of {}...'.format(nadeg(noise/3600.0/180.0*np.pi)))
+        print_sights(sights)
+        add_sighting_noise(sights, noise)
+
+
+        parrange = np.zeros((2, 4))
+        parrange[0, :] = np.array(
+            [sights[0].latA.rad - 10 / 180 * np.pi, sights[0].lonA.rad - 10 / 180 * np.pi, 0.0, 200 / 180.0 * np.pi])
+        parrange[1, :] = np.array(
+            [sights[0].latA.rad + 10 / 180 * np.pi, sights[0].lonA.rad + 10 / 180 * np.pi, 14, 360 / 180.0 * np.pi])
+
+        pos, lnprobs, rstate, sampler = analyze_sights(sights, parrange)
+
+
+        results[i, 0] = noise
+        # compute the uncertainties in lat/lon
+        #LB, UB = HPD_SIM(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi, 0.05)
+        est_mean = np.mean(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
+        est_std = 2.0*np.std(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
+        results[i, 1] = est_mean
+        results[i, 2] = est_std
+        #LB, UB = HPD_SIM(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi, 0.05)
+        est_mean = np.mean(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
+        est_std = 2.0 * np.std(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
+        results[i, 3] = est_mean
+        results[i, 4] = est_std
+        print('Analysis of noise magnitude {} complete.'.format(nadeg(noise/60/60/180.0*np.pi)))
+        print('Lat: {}  +- {}   Lon: {} +- {}'.format(nadeg(results[i, 1]/180.0*np.pi), nadeg(results[i, 2]/180.0*np.pi), nadeg(results[i, 3]/180.0*np.pi), nadeg(results[i, 4]/180.0*np.pi) ))
+
+    plot_position_estimate_and_contours(sights, sampler)
+
+    return results
 
 
 if __name__ == "__main__":
     # 'database' of sightings for reduction into a single lat/long pair + course speed/heading
 
+    # 21-Feb-2015
     db_sights = """\
-    Venus,2015/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d50m
-    Sirius,2015/02/21,20:25:27,45d32.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d51m
-    SunLL,2015/02/22,12:11:17,51d07.3m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d7m
-    SunLL,2015/02/22,12:12:13,51d22.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d7m
-    SunLL,2015/02/22,12:13:08,51d29.8m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d7m
-    SunLL,2015/02/22,12:13:55,51d39.5m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d7m
-    SunLL,2015/02/22,12:15:05,51d48.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d7m
+        Venus,2015/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d4m,-25d36m
+        Sirius,2015/02/21,20:25:27,45d32.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d4m,-25d36m
+        """
+    # 22-Feb-2015
+    db_sights = """\
+    SunLL,2015/02/22,12:11:17,51d07.3m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
+    SunLL,2015/02/22,12:12:13,51d22.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
+    SunLL,2015/02/22,12:13:08,51d29.8m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
+    SunLL,2015/02/22,12:13:55,51d39.5m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
+    SunLL,2015/02/22,12:15:05,51d48.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d29m
     SunLL,2015/02/22,14:21:17,62d42.3m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
     SunLL,2015/02/22,14:22:23,62d34.8m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
     SunLL,2015/02/22,14:23:11,62d36.4m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
     """
 
-    db_sights = """\
-        Venus,2016/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d50m
-        Sirius,2016/02/21,20:25:27,45d32.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d51m
-        """
-    db_sights = """\
-            Arcturus,2015/02/23,07:54:42,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
-            Saturn,2015/02/23,8:04:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
-            Saturn,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
-            Izar,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
-            Kochab,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
-            Vega,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
-            """
+
+    # db_sights = """\
+    #         Arcturus,2015/02/23,07:54:42,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+    #         Saturn,2015/02/23,8:04:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+    #         Saturn,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+    #         Izar,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+    #         Kochab,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+    #         Vega,2015/02/23,8:10:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+    #         """
+    # db_sights = """\
+    #         Arcturus,2015/02/23,07:54:42,52d43.6m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+    #         Saturn,2015/02/23,8:04:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
+    #         """
+
     sights = db_sights_preprocess(db_sights)
-    print(sights)
+
+
 
     ll_lat = []
     ll_lon = []
-    # # preprocess the array of sights into corrected sightings based on ephemeris from pyephem
-    # for i in range(len(sights)):
-    #
-    #     # estimate the location
-    #     # function def is: est_longitude(body, date, time, Ha, IE, h, temp, pressure, GHA, DEC, latA, lonA):
-    #     sights[i].est_longitude()
-    #     print('Estimated longitude is: {:.3f}'.format(sights[i].est_lon))
-    #     ll_lat.append(sights[i].datetime.strftime('%Y:%m:%d'))
-    #     ll_lon.append(sights[i].est_lon.deg)
 
     # test the prediction routine -- predicts actual sextant sightings from an assumed location & heading
     est_Hs_out = Hs_predict(sights, sights[0].DRv, sights[0].DRbearing, sights[0].latA.rad, sights[0].lonA.rad)
 
     print(est_Hs_out)
 
-    # change the sights to be theoretically perfect (plus a small amount of random noise)
-    print_sights(sights)
-    sights = generate_sights(sights)
-    print_sights(sights)
+    ## change the sights to be theoretically perfect
+    #sights = generate_sights(sights)
+
+    # run simulation
+    positional_fix_vs_sextant_error(sights)
+
+
+
+
 
     # now get the GHA/DEC values and store them, so we don't have to keep looking them up
     ghadec_vals = get_GHADEC_arrays(sights)
@@ -509,15 +677,6 @@ if __name__ == "__main__":
     td = get_timedeltas(sights)
     # get the observed altitudes
     Ho_obs = get_Ho_altitudes(sights)
-    x0 = np.array((sights[0].latA.rad, sights[0].lonA.rad, 11.5, 270/180.0*np.pi))
-    min_out = scipy.optimize.minimize(fsight, x0, args=(ghadec_vals, td, Ho_obs), method='Nelder-Mead')
-    print(min_out)
-    print('Lat: {:.3f} Lon: {:.3f} Speed: {:.2f} Bearing: {:.2f}'.format(min_out.x[0]*180.0/np.pi, min_out.x[1]*180.0/np.pi, min_out.x[2], min_out.x[3]*180/np.pi))
-    # Compute the final lat/lon estimate
-    darray = compute_distances(td, min_out.x[2])
-    phi2, lambda2 = compute_displacement(min_out.x[0], min_out.x[1], min_out.x[2], darray)
-    print('Phi2: {}  Lambda2: {}'.format(phi2*180/np.pi,lambda2*180/np.pi))
-
 
     # start with MCMC simulation
     parrange = np.zeros((2,4))
@@ -538,137 +697,119 @@ if __name__ == "__main__":
         uidx = p0[i] > parrange[1, :]
         p0[i][uidx] = parrange[1, uidx]
 
+    #sigma_s = 0.5/60
+    #fslambda = lambda x: fsight_logp(x, parrange, ghadec_vals, td, Ho_obs, sigma_s)
 
-    fslambda = lambda x: fsight_logp(x, parrange, ghadec_vals, td, Ho_obs)
 
-
-    # print('Now predict step by step...')
-    # DRv = x0[2]
-    # darray = compute_distances(td, DRv)
+    # # Ho = Hc * 180.0 / np.pi  # convert to degrees
+    # sampler = emcee.EnsembleSampler(nwalkers, ndim, fslambda)
+    # # burnin using emcee
+    # [pos, lnprobs, rstate] = sampler.run_mcmc(p0, 50)
     #
-    # # compute the lat/lon pairs for each time
-    # lat_in = np.ones(len(sights)) * x0[0]
-    # lon_in = np.ones(len(sights)) * x0[1]
-    #
-    # # compute the displacement of lat/lon along a great circle, given the initial point, bearing, and distance travelled
-    # phi2, lambda2 = compute_displacement(lat_in, lon_in, x0[3], darray)  # args should be in radians
-    # print('phi 2 and lambda2: {} and {}'.format(phi2*180.0/np.pi,lambda2*180/np.pi))
-    # # compute the Hs values for each lat/lon pair and sighting
-    # Hc = compute_Hc_fast(phi2, lambda2, ghadec_vals[:, 0] / 180.0 * np.pi,
-    #                      ghadec_vals[:, 1] / 180.0 * np.pi)  # everything must be in radians
-    # print('HC is {}'.format(Hc*180.0/np.pi))
+    # # sample from the posterior using emcee
+    # sampler.reset()
+    # [pos, lnprobs, rstate] = sampler.run_mcmc(pos, 50, thin=2)
     #
     #
-    # # take the true altitudes and subtracted the correction estimates to get what should be observed on a sextant reading
-    # Ho = Hc * 180.0 / np.pi  # convert to degrees
-    sampler = emcee.EnsembleSampler(nwalkers, ndim, fslambda)
-    # burnin using emcee
-    [pos, lnprobs, rstate] = sampler.run_mcmc(p0, 500)
-
-    # sample from the posterior using emcee
-    sampler.reset()
-    [pos, lnprobs, rstate] = sampler.run_mcmc(pos, 500, thin=2)
-
-
-    fig, axes = plt.subplots(7, 1, sharex=True, figsize=(8, 9))
-    axes[0].plot(sampler.chain[:, :, 0].T*180.0/np.pi, color="k", alpha=0.4)
-    # axes[0].yaxis.set_major_locator(MaxNLocator(5))
-    # axes[0].axhline(m_true, color="#888888", lw=2)
-    axes[0].set_ylabel("$D_es$")
-    # axes[0].set_ylim([0.4,3])
-
-    axes[1].plot(sampler.chain[:, :, 1].T*180.0/np.pi, color="k", alpha=0.4)
-    # axes[1].yaxis.set_major_locator(MaxNLocator(5))
-    # axes[1].axhline(b_true, color="#888888", lw=2)
-    axes[1].set_ylabel("$Lambda$")
-
-    # compute the final lat/lon from the sampler output
-    chain_lat = np.zeros(sampler.chain[:, :, 1].shape)
-    chain_lon = np.zeros(sampler.chain[:, :, 1].shape)
-    for i in range(len(sampler.chain[:, 1, 1])):
-        for j in range(len(sampler.chain[1, :, 1])):
-            phi2, lambda2 = compute_displacement(sampler.chain[i,j,0], sampler.chain[i,j,1], sampler.chain[i,j,3], darray[-1])
-            chain_lat[i, j] = phi2
-            chain_lon[i, j] = lambda2
-
-
-    axes[2].plot(chain_lat.T*180.0/np.pi, color="k", alpha=0.4)
-    # axes[2].yaxis.set_major_locator(MaxNLocator(5))
-    # axes[2].axhline(f_true, color="#888888", lw=2)
-    axes[2].set_ylabel("$LATOUT$")
-    axes[2].set_xlabel("step number")
-
-    axes[3].plot(chain_lon.T*180.0/np.pi, color="k", alpha=0.4)
-    # axes[2].yaxis.set_major_locator(MaxNLocator(5))
-    # axes[2].axhline(f_true, color="#888888", lw=2)
-    axes[3].set_ylabel("$LONOUT$")
-
-    axes[3].set_xlabel("step number")
-
-    axes[4].plot(sampler.chain[:, :, 2].T, color="k", alpha=0.4)
-    # axes[2].yaxis.set_major_locator(MaxNLocator(5))
-    # axes[2].axhline(f_true, color="#888888", lw=2)
-    axes[4].set_ylabel("$Delta1$")
-    # axes[2].set_ylim([0.0,3.0])
-
-    axes[5].plot(sampler.chain[:, :, 3].T * 180.0 / np.pi, color="k", alpha=0.4)
-    # axes[2].yaxis.set_major_locator(MaxNLocator(5))
-    # axes[2].axhline(f_true, color="#888888", lw=2)
-    axes[5].set_ylabel("$Delta2$")
-    axes[5].set_xlabel("step number")
-
-    axes[6].plot(sampler.lnprobability.T, color="k", alpha=0.4)
-    # axes[2].yaxis.set_major_locator(MaxNLocator(5))
-    # axes[2].axhline(f_true, color="#888888", lw=2)
-    axes[6].set_ylabel("$P$")
-
-    axes[6].set_xlabel("step number")
-
-
-
-    plt.show()
-
-    # iterate through the hamiltonian parameters of interest and spit out the estimates/intervals
-
-
-    LB, UB = HPD_SIM(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi, 0.05)
-    est_mean = np.mean(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
-    est_interval = np.max([est_mean - LB, UB - est_mean])
-    print('----------Parameter Lat_In----------')
-    print('{} = {} +- {}'.format('lat in', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
-    print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 0].flatten()))))
-
-    LB, UB = HPD_SIM(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi, 0.05)
-    est_mean = np.mean(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
-    est_interval = np.max([est_mean - LB, UB - est_mean])
-    print('----------Parameter Lon_In----------')
-    print('{} = {} +- {}'.format('lon in', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
-    print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 1].flatten()))))
-
-    LB, UB = HPD_SIM(sampler.chain[:, :, 2].flatten(), 0.05)
-    est_mean = np.mean(sampler.chain[:, :, 2].flatten())
-    est_interval = np.max([est_mean - LB, UB - est_mean])
-    print('----------Parameter Velocity----------')
-    print('{} = {} +- {}'.format('lon in', est_mean, est_interval ))
-    print('2x std is {}'.format(2.0 * np.std(sampler.chain[:, :, 2].flatten())))
-
-    LB, UB = HPD_SIM(sampler.chain[:, :, 3].flatten() * 180.0 / np.pi, 0.05)
-    est_mean = np.mean(sampler.chain[:, :, 3].flatten() * 180.0 / np.pi)
-    est_interval = np.max([est_mean - LB, UB - est_mean])
-    print('----------Parameter Bearing----------')
-    print('{} = {} +- {}'.format('bearing', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
-    print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 3].flatten()))))
-
-    LB, UB = HPD_SIM(chain_lat.flatten()*180.0/np.pi, 0.05)
-    est_mean = np.mean(chain_lat.flatten()*180.0/np.pi)
-    est_interval = np.max([est_mean - LB, UB - est_mean])
-    print('----------Parameter Lat_Out----------')
-    print('{} = {} +- {}'.format('lat out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
-    print('2x std is {}'.format(nadeg(2.0*np.std(chain_lat.flatten()))))
-
-    LB, UB = HPD_SIM(chain_lon.flatten()*180.0/np.pi, 0.05)
-    est_mean = np.mean(chain_lon.flatten()*180.0/np.pi)
-    est_interval = np.max([est_mean - LB, UB - est_mean])
-    print('----------Parameter Lon_Out----------')
-    print('{} = {} +- {}'.format('lon out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
-    print('2x std is {}'.format(nadeg(2.0*np.std(chain_lon.flatten()))))
+    # fig, axes = plt.subplots(7, 1, sharex=True, figsize=(8, 9))
+    # axes[0].plot(sampler.chain[:, :, 0].T*180.0/np.pi, color="k", alpha=0.4)
+    # # axes[0].yaxis.set_major_locator(MaxNLocator(5))
+    # # axes[0].axhline(m_true, color="#888888", lw=2)
+    # axes[0].set_ylabel("$D_es$")
+    # # axes[0].set_ylim([0.4,3])
+    #
+    # axes[1].plot(sampler.chain[:, :, 1].T*180.0/np.pi, color="k", alpha=0.4)
+    # # axes[1].yaxis.set_major_locator(MaxNLocator(5))
+    # # axes[1].axhline(b_true, color="#888888", lw=2)
+    # axes[1].set_ylabel("$Lambda$")
+    #
+    # # compute the final lat/lon from the sampler output
+    # chain_lat = np.zeros(sampler.chain[:, :, 1].shape)
+    # chain_lon = np.zeros(sampler.chain[:, :, 1].shape)
+    # for i in range(len(sampler.chain[:, 1, 1])):
+    #     for j in range(len(sampler.chain[1, :, 1])):
+    #         phi2, lambda2 = compute_displacement(sampler.chain[i,j,0], sampler.chain[i,j,1], sampler.chain[i,j,3], darray[-1])
+    #         chain_lat[i, j] = phi2
+    #         chain_lon[i, j] = lambda2
+    #
+    #
+    # axes[2].plot(chain_lat.T*180.0/np.pi, color="k", alpha=0.4)
+    # # axes[2].yaxis.set_major_locator(MaxNLocator(5))
+    # # axes[2].axhline(f_true, color="#888888", lw=2)
+    # axes[2].set_ylabel("$LATOUT$")
+    # axes[2].set_xlabel("step number")
+    #
+    # axes[3].plot(chain_lon.T*180.0/np.pi, color="k", alpha=0.4)
+    # # axes[2].yaxis.set_major_locator(MaxNLocator(5))
+    # # axes[2].axhline(f_true, color="#888888", lw=2)
+    # axes[3].set_ylabel("$LONOUT$")
+    #
+    # axes[3].set_xlabel("step number")
+    #
+    # axes[4].plot(sampler.chain[:, :, 2].T, color="k", alpha=0.4)
+    # # axes[2].yaxis.set_major_locator(MaxNLocator(5))
+    # # axes[2].axhline(f_true, color="#888888", lw=2)
+    # axes[4].set_ylabel("$Delta1$")
+    # # axes[2].set_ylim([0.0,3.0])
+    #
+    # axes[5].plot(sampler.chain[:, :, 3].T * 180.0 / np.pi, color="k", alpha=0.4)
+    # # axes[2].yaxis.set_major_locator(MaxNLocator(5))
+    # # axes[2].axhline(f_true, color="#888888", lw=2)
+    # axes[5].set_ylabel("$Delta2$")
+    # axes[5].set_xlabel("step number")
+    #
+    # axes[6].plot(sampler.lnprobability.T, color="k", alpha=0.4)
+    # # axes[2].yaxis.set_major_locator(MaxNLocator(5))
+    # # axes[2].axhline(f_true, color="#888888", lw=2)
+    # axes[6].set_ylabel("$P$")
+    #
+    # axes[6].set_xlabel("step number")
+    #
+    #
+    #
+    # plt.show()
+    #
+    # # iterate through the hamiltonian parameters of interest and spit out the estimates/intervals
+    #
+    #
+    # LB, UB = HPD_SIM(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi, 0.05)
+    # est_mean = np.mean(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
+    # est_interval = np.max([est_mean - LB, UB - est_mean])
+    # print('----------Parameter Lat_In----------')
+    # print('{} = {} +- {}'.format('lat in', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
+    # print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 0].flatten()))))
+    #
+    # LB, UB = HPD_SIM(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi, 0.05)
+    # est_mean = np.mean(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
+    # est_interval = np.max([est_mean - LB, UB - est_mean])
+    # print('----------Parameter Lon_In----------')
+    # print('{} = {} +- {}'.format('lon in', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
+    # print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 1].flatten()))))
+    #
+    # LB, UB = HPD_SIM(sampler.chain[:, :, 2].flatten(), 0.05)
+    # est_mean = np.mean(sampler.chain[:, :, 2].flatten())
+    # est_interval = np.max([est_mean - LB, UB - est_mean])
+    # print('----------Parameter Velocity----------')
+    # print('{} = {} +- {}'.format('lon in', est_mean, est_interval ))
+    # print('2x std is {}'.format(2.0 * np.std(sampler.chain[:, :, 2].flatten())))
+    #
+    # LB, UB = HPD_SIM(sampler.chain[:, :, 3].flatten() * 180.0 / np.pi, 0.05)
+    # est_mean = np.mean(sampler.chain[:, :, 3].flatten() * 180.0 / np.pi)
+    # est_interval = np.max([est_mean - LB, UB - est_mean])
+    # print('----------Parameter Bearing----------')
+    # print('{} = {} +- {}'.format('bearing', nadeg(est_mean / 180 * np.pi), nadeg(est_interval / 180 * np.pi)))
+    # print('2x std is {}'.format(nadeg(2.0 * np.std(sampler.chain[:, :, 3].flatten()))))
+    #
+    # LB, UB = HPD_SIM(chain_lat.flatten()*180.0/np.pi, 0.05)
+    # est_mean = np.mean(chain_lat.flatten()*180.0/np.pi)
+    # est_interval = np.max([est_mean - LB, UB - est_mean])
+    # print('----------Parameter Lat_Out----------')
+    # print('{} = {} +- {}'.format('lat out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
+    # print('2x std is {}'.format(nadeg(2.0*np.std(chain_lat.flatten()))))
+    #
+    # LB, UB = HPD_SIM(chain_lon.flatten()*180.0/np.pi, 0.05)
+    # est_mean = np.mean(chain_lon.flatten()*180.0/np.pi)
+    # est_interval = np.max([est_mean - LB, UB - est_mean])
+    # print('----------Parameter Lon_Out----------')
+    # print('{} = {} +- {}'.format('lon out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
+    # print('2x std is {}'.format(nadeg(2.0*np.std(chain_lon.flatten()))))
