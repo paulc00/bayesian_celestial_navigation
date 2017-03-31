@@ -403,9 +403,9 @@ def HPD_SIM(data, alpha):
     UB = data_sorted[idx + span]
     return LB, UB
 
-def generate_sights(sights):
-    # this function will generate a set of sights from positional data. its purpose is to provide sightings with a
-    # known amount of noise in order to test the analysis rountine's output
+def generate_sights_DR(sights):
+    # this function will generate a set of sights from positional data PLUS dead reckoning.
+    # its purpose is to provide perfect sightings for a given initial position and heading/velocity at sea
 
     # compute the timedelta array & displacements in lat/lon based on the nominal bearing and velocity
     td = get_timedeltas(sights)
@@ -445,6 +445,37 @@ def generate_sights(sights):
     # now update the sights to have sightings at the values we calculated
     for i in range(len(sights)):
         sights[i].Hs = Angle(est_Hs[i], unit=u.deg)
+        sights[i].update_sight_corrections()
+
+    return sights
+
+def generate_sights_positional(sights):
+    # this function will generate a set of sights from positional data ONLY. this means that for each entry in the
+    # sight database, the lattitude and longitude indicated are assumed correct, and the sight that should be recorded
+    # for that exact position is computed and set as the observed sight in the database.
+    #
+    # its purpose is to provide perfect sightings for the assumed lattitude/longitude positions, which can help with
+    # code testing and also determining whether actual observed sights are close to what we'd expect.
+
+    # compute the timedelta array & displacements in lat/lon based on the nominal bearing and velocity
+    for i in range(len(sights)):
+        latA = sights[i].latA.radian
+        lonA = sights[i].lonA.radian
+        # get an array of GHA and DEC vals for each sighting
+        ghadec_vals = get_GHADEC_arrays([sights[i]])
+
+        # compute the Hs values for each lat/lon pair and sighting
+        Hc = compute_Hc_fast(latA, lonA, ghadec_vals[:, 0] / 180.0 * np.pi,
+                             ghadec_vals[:, 1] / 180.0 * np.pi)  # everything must be in radians
+        # take the true altitudes and subtracted the correction estimates to get what should be observed on a sextant reading
+        corr_vals = get_totalsightcorrection([sights[i]])  # in radians
+        est_Hs = (Hc - corr_vals) * 180.0 / np.pi  # convert to degrees
+        print('Est_Hs is {}'.format(est_Hs))
+        # get the array of corrections, so we can convert to predicted sextant readings -- these are based on the approximate
+        # lat/lon values, but as long as the guess is remotely correct, should be more than accurate.
+
+        # now update the sights to have sightings at the values we calculated
+        sights[i].Hs = Angle(est_Hs, unit=u.deg)
         sights[i].update_sight_corrections()
 
     return sights
@@ -541,8 +572,8 @@ def plot_position_estimate_and_contours(sights, sampler):
     # plot coastlines, draw label meridians and parallels.
     map.drawcoastlines()
 
-    map.drawparallels(np.arange(np.floor(mean_lat)-1, np.ceil(mean_lat) + 2, 1), labels=[1, 0, 0, 0])
-    map.drawmeridians(np.arange(np.floor(mean_lon)-1, np.ceil(mean_lon) + 2, 1), labels=[0, 0, 0, 1])
+    map.drawparallels(np.arange(np.floor(mean_lat)-5, np.ceil(mean_lat) + 5, 1), labels=[1, 0, 0, 0])
+    map.drawmeridians(np.arange(np.floor(mean_lon)-5, np.ceil(mean_lon) + 5, 1), labels=[0, 0, 0, 1])
     # fill continents 'coral' (with zorder=0), color wet areas 'aqua'
     map.drawmapboundary(fill_color='aqua')
     map.fillcontinents(color='coral', lake_color='aqua')
@@ -703,22 +734,50 @@ if __name__ == "__main__":
             SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d8m
             """
     # 02-Mar-2015 -- including previous day's sun sights -- seems to be a significant error in these sights
+    # The second sight: SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d08m
+    # is bad -- the location data is wrong.
     db_sights = """\
                 SunUL,2015/03/01,14:00:05,60d1.7m,0.0,2.0m,3.66,25,1010,6,270d,16d48m,-45d8m
-                SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d35m
+                SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d08m
                 SunUL,2015/03/02,11:10:54,24d26.1m,0.0,2.0m,3.66,25,1010,6,270d,15d26m,-47d16m
-                SunLL,2015/03/02,16:38:10,60d41.7m,0.0,1.9m,3.66,25,1010,6,270d,15d23m,-47d16m
+                SunLL,2015/03/02,16:38:10,60d41.7m,0.0,1.9m,3.66,25,1010,6,270d,15d23m,-47d56m
                 """
-    # 03-Mar-2015
-    db_sights = """\
-                SunLL,2015/03/03,13:59:01,57d50.8m,0.0,2.2m,3.66,25,1010,6,270d,15d10m,-50d10m
-                SunLL,2015/03/03,18:03:12,47d34.2m,0.0,2.0m,3.66,25,1010,6,270d,15d07m,-51d18m
-                """
-    # 04-Mar-2015
+    # 02-Mar-2015 -- Including ONLY today's sights.
     # db_sights = """\
-    #             SunLL,2015/03/04,14:52:13,65d10.9m,0.0,2.1m,3.05,25,1010,6,270d,14d58m,-52d22m
-    #             SunUL,2015/03/04,17:15:16,59d07.1m,0.0,2.2m,3.05,25,1010,6,270d,14d56m,-52d46m
+    #             SunUL,2015/03/02,11:10:54,24d26.1m,0.0,2.0m,3.66,25,1010,6,270d,15d26m,-47d16m
+    #             SunLL,2015/03/02,16:38:10,60d41.7m,0.0,1.9m,3.66,25,1010,6,270d,15d23m,-47d16m
     #             """
+    # 03-Mar-2015
+    # db_sights = """\
+    #             SunLL,2015/03/03,13:59:01,57d50.8m,0.0,2.2m,3.05,25,1010,6,270d,15d10m,-50d10m
+    #             SunUL,2015/03/03,18:03:12,47d34.2m,0.0,2.0m,3.05,25,1010,6,270d,15d07m,-51d18m
+    #            """
+    # 04-Mar-2015 -- watch error is 3 seconds fast, not 4 seconds.
+    # db_sights = """\
+    #             SunLL,2015/03/04,14:52:14,65d10.9m,0.0,2.1m,3.05,25,1010,6,270d,14d58m,-52d22m
+    #             SunUL,2015/03/04,17:15:17,59d07.1m,0.0,2.2m,3.05,25,1010,6,270d,14d56m,-52d46m
+    #             """
+    # 05-Mar-2015
+    db_sights = """\
+                SunLL,2015/03/05,14:32:49,61d25.6m,0.0,1.8m,3.05,25,1010,6,270d,14d46m,-54d42m
+                SunLL,2015/03/05,18:40:21,43d18.7m,0.0,2.2m,2.44,25,1010,6,270d,14d45m,-55d14m
+                """
+    # 06-Mar-2015 -- morning sights only
+    # without:                    Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+    db_sights = """\
+                Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+                Dubhe,2015/03/06,9:44:10,14d26.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+                Arcturus,2015/03/06,9:49:53,50d59.8m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+                """
+    # 06-Mar-2015 -- complete set of all six sights
+    db_sights = """\
+            Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+            Dubhe,2015/03/06,9:44:10,14d26.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+            Arcturus,2015/03/06,9:49:53,50d59.8m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+            Venus,2015/03/06,22:05:53,28d46.1,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
+            Sirius,2015/03/06,22:10:07,51d43.6m,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
+            Acamar,2015/03/06,22:49:53,25d56.8m,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
+            """
     # db_sights = """\
     #         Arcturus,2015/02/23,07:54:42,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
     #         Saturn,2015/02/23,8:04:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
@@ -745,7 +804,7 @@ if __name__ == "__main__":
     print(est_Hs_out)
 
     ## change the sights to be theoretically perfect
-    #sights = generate_sights(sights)
+    #sights = generate_sights_positional(sights)
 
     # run simulation
     positional_fix_vs_sextant_error(sights)
