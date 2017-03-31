@@ -123,7 +123,7 @@ class Sight:
         if self.body == 'SunLL' or self.body == 'SunUL':
             s = ephem.Sun()
         # insert moon here
-        elif self.body == 'MoonLL' or self.body = 'MoonUL':
+        elif self.body == 'MoonLL' or self.body == 'MoonUL':
             s = ephem.Moon()
         # planets
         elif self.body == 'Mars':
