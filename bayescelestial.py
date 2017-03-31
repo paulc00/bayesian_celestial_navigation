@@ -94,7 +94,7 @@ class Sight:
                 self.SD_corr = Angle('{:.3f}d'.format(sds))
                 return
             else:
-                self.SD_corr = Angle('{:.3f}d'.format(sds))
+                self.SD_corr = Angle('-{:.3f}d'.format(sds))
                 return
 
         self.SD_corr = Angle('0d')
@@ -360,8 +360,8 @@ def prior_logP(params, parrange):
     if np.any(params < parrange[0,:]) or np.any(params > parrange[1,:]):
         return -np.inf
     else:
-        bearing_prior = -(params[3]-270.0/180.0*np.pi)**2.0/(2.0*((10.0/180.0*np.pi)**2.0))
-        velocity_prior = -(params[2]-5.5)**2.0/(2.0*(2.0**2.0))
+        bearing_prior = -(params[3]-270.0/180.0*np.pi)**2.0/(2.0*((20.0/180.0*np.pi)**2.0))
+        velocity_prior = -(params[2]-5.5)**2.0/(2.0*(3.0**2.0))
         return bearing_prior + velocity_prior
 
 def fsight_logp(x, parrange, ghadec_vals, td, Ho_obs, sigma_s):
@@ -502,7 +502,7 @@ def analyze_sights(sights, parrange):
     sampler = emcee.EnsembleSampler(nwalkers, ndim, fslambda)
 
     # burnin/sample using emcee
-    N_burnin = 2000
+    N_burnin = 4000
     N_final = 2000
     print('Starting burnin of {:d} samples...'.format(N_burnin))
     [pos, lnprobs, rstate] = sampler.run_mcmc(p0, N_burnin)
@@ -633,8 +633,8 @@ def positional_fix_vs_sextant_error(input_sights):
 
 if __name__ == "__main__":
     # 'database' of sightings for reduction into a single lat/long pair + course speed/heading
-    pr = cProfile.Profile()
-    pr.enable()
+    #pr = cProfile.Profile()
+    #pr.enable()
     # 21-Feb-2015
     db_sights = """\
         Venus,2015/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d4m,-25d36m
@@ -702,7 +702,23 @@ if __name__ == "__main__":
             SunUL,2015/03/01,14:00:05,60d1.7m,0.0,2.0m,3.66,25,1010,6,270d,16d48m,-45d8m
             SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d8m
             """
-
+    # 02-Mar-2015 -- including previous day's sun sights -- seems to be a significant error in these sights
+    db_sights = """\
+                SunUL,2015/03/01,14:00:05,60d1.7m,0.0,2.0m,3.66,25,1010,6,270d,16d48m,-45d8m
+                SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d35m
+                SunUL,2015/03/02,11:10:54,24d26.1m,0.0,2.0m,3.66,25,1010,6,270d,15d26m,-47d16m
+                SunLL,2015/03/02,16:38:10,60d41.7m,0.0,1.9m,3.66,25,1010,6,270d,15d23m,-47d16m
+                """
+    # 03-Mar-2015
+    db_sights = """\
+                SunLL,2015/03/03,13:59:01,57d50.8m,0.0,2.2m,3.66,25,1010,6,270d,15d10m,-50d10m
+                SunLL,2015/03/03,18:03:12,47d34.2m,0.0,2.0m,3.66,25,1010,6,270d,15d07m,-51d18m
+                """
+    # 04-Mar-2015
+    # db_sights = """\
+    #             SunLL,2015/03/04,14:52:13,65d10.9m,0.0,2.1m,3.05,25,1010,6,270d,14d58m,-52d22m
+    #             SunUL,2015/03/04,17:15:16,59d07.1m,0.0,2.2m,3.05,25,1010,6,270d,14d56m,-52d46m
+    #             """
     # db_sights = """\
     #         Arcturus,2015/02/23,07:54:42,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
     #         Saturn,2015/02/23,8:04:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
@@ -880,9 +896,9 @@ if __name__ == "__main__":
     # print('----------Parameter Lon_Out----------')
     # print('{} = {} +- {}'.format('lon out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
     # print('2x std is {}'.format(nadeg(2.0*np.std(chain_lon.flatten()))))
-    pr.disable()
-    s = io.StringIO()
-    sortby = 'cumulative'
-    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-    ps.print_stats()
-    print(s.getvalue())
+    # pr.disable()
+    # s = io.StringIO()
+    # sortby = 'cumulative'
+    # ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+    # ps.print_stats()
+    # print(s.getvalue())
