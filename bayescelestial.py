@@ -66,9 +66,11 @@ class Sight:
 
     def get_horizontal_parallax(self):
         if self.body == 'SunLL' or self.body == 'SunUL':
-            self.HP = Angle('0.0d') # Angle('0.0024d')
+            self.HP = Angle('0.0024d')
             return
-        # placeholder function
+        if self.body == 'MoonLL' or self.body == 'MoonUL':
+            self.HP = Angle()
+
         self.HP = Angle('0.0d')
         return
 
@@ -121,6 +123,8 @@ class Sight:
         if self.body == 'SunLL' or self.body == 'SunUL':
             s = ephem.Sun()
         # insert moon here
+        elif self.body == 'MoonLL' or self.body = 'MoonUL':
+            s = ephem.Moon()
         # planets
         elif self.body == 'Mars':
             s = ephem.Mars()
@@ -139,6 +143,8 @@ class Sight:
             s = ephem.star(self.body)
 
         obs = ephem.Observer()
+        # disable a correction for pressure, since we do this later
+        obs.pressure = 0
         # format strings from datetime object
         date = self.datetime.strftime('%Y/%m/%d')
         time = self.datetime.strftime('%H:%M:%S')
@@ -769,14 +775,21 @@ if __name__ == "__main__":
                 Dubhe,2015/03/06,9:44:10,14d26.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
                 Arcturus,2015/03/06,9:49:53,50d59.8m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
                 """
-    # 06-Mar-2015 -- complete set of all six sights
+    # 06-Mar-2015 -- complete set of all six sights -- minus Acamar:
+    #  Acamar,2015/03/06,22:49:53,25d56.8m,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
+    # Could not get this sight to work -- had to manually add its data from Hipparchos DB to PyEphem, but
+    # the sight I got out was a few degrees off.
     db_sights = """\
             Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
             Dubhe,2015/03/06,9:44:10,14d26.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
             Arcturus,2015/03/06,9:49:53,50d59.8m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
             Venus,2015/03/06,22:05:53,28d46.1,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
             Sirius,2015/03/06,22:10:07,51d43.6m,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
-            Acamar,2015/03/06,22:49:53,25d56.8m,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
+            """
+    db_sights = """\
+            Kochab,2015/03/07,9:48:11,28d8.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+            Antares,2015/03/07,9:55:42,49d58.3m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+            MoonLL,2015/03/07,10:05:11,14d29.0m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
             """
     # db_sights = """\
     #         Arcturus,2015/02/23,07:54:42,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
