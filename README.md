@@ -36,10 +36,16 @@ A classical positional fix from two star sightings:
 
 ![ScreenShot](plots/20150221_1.png)
 
+This is a great example of the statistical uncertainty of a regular fix. Since two stars at different locations in the sky are measured, and each measurement defines an arc on the Earth where the position could be, the two arcs crossing produce an "X" pattern. The overlap gives good resolution of both lattitude and longitude, and this is why this is the main technique for fixing position using a sextant.
+
 A positional fix from 13 lower-limb Sun sightings, taken in quick succession (~35 minutes):
 
 ![ScreenShot](plots/20150225_1.png)
 
-A positional fix from six lower- and upper-limb Sum sightings, taken in two sets separated by 4 hours:
+During the day, when no stars other than the Sun are visible, it can be difficult to estimate a precise lattitude/longitude fix. A simple technique for navigation would be to use dead reckoning, which is where the last known position fix is updated using the ship's estimated velocity, but this is subject to many errors. During the day, the lattitude can be estimated by looking at the Sun's position, especially around the noon hour. In this plot, a sequence of Sun sightings are taken and reduced into the posterior probability distribution of both lattitude and longitude. You can see from the plot that the uncertainty in lattitude is about 1.6 arcminutes, while the uncertainty in longitude is about 17 arcminutes (a 10x increase). This reflects that comparatively less information can be extracted about the longitude. However, this plot answers one of my original questions: it's clear that there's *some* information there, and so even with a few Sun sights, a rough position fix in both lat/lon can be obtained.
+
+A positional fix from six lower- and upper-limb Sun sightings, taken in two sets separated by 4 hours:
 
 ![ScreenShot](plots/20150224_1.png)
+
+
