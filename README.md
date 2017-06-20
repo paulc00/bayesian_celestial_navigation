@@ -34,17 +34,12 @@ Position plots: The red dot indicates the true position given by the navigation 
 
 A classical positional fix from two star sightings:
 
+![ScreenShot](plots/20150221_1.png)
 
 A positional fix from 13 lower-limb Sun sightings, taken in quick succession (~35 minutes):
 
-
+![ScreenShot](plots/20150225_1.png)
 
 A positional fix from six lower- and upper-limb Sum sightings, taken in two sets separated by 4 hours:
 
-
-Positional fix as a function of added artificial noise magnitude:
-
-
-Evolution of MCMC chains per simulation step:
-
-This is a nice visualization of the 
+![ScreenShot](plots/20150224_1.png)
