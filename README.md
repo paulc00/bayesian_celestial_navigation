@@ -1,6 +1,6 @@
 # Bayesian Celestial Navigation
 
-This package uses Markov Chain Monte Carlo methods to infer a positional fix using readings from a marine sextant.
+This package uses Markov Chain Monte Carlo (MCMC) methods to infer a positional fix using readings from a marine sextant.
 
 I created this project to teach myself basic celestial navigation techniques well enough to solve a set of celestial navigation exercises on a blog I found: [Celestial Navigation Practice Problems](https://celestialnavproblems.wordpress.com)
 
@@ -16,84 +16,35 @@ While writing this code, I found Rodger E. Farley's '[The Armchair Celestial Nav
 
 ## Getting Started
 
-These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See deployment for notes on how to deploy the project on a live system.
+This is a small project that's for my own exploration, so all of the analysis subfunctions are stored in a single file (bayescelestial.py). The simulated sextant sightings are read in from blocks of strings stored there, as well; this isn't pretty, but it made for quick exploratory analysis.
 
 ### Prerequisites
 
-What things you need to install the software and how to install them
+Beyond the standard numpy, scipy, and matplotlib packages, this package requires:
 
-```
-Give examples
-```
+astropy -- does lattitude/longitude computations
 
-### Installing
+pyephem -- performs basic astronomical calculations. Most importantly, this is used to compute the Global Hour Angle (GHA) and Declination (DEC), which are the main quantities used in determining the expected object location in the sky, and other quantities like the semi-diameter of the Moon, which must be taken into account for accurate position fixing.
 
-A step by step series of examples that tell you have to get a development env running
+emcee -- performs Markov Chain Monte Carlo simulations. These are the main interest of the package, as they are used for statistical inference of a position given the sextant sightings and GHA/DEC data from pyephem.
 
-Say what the step will be
+## Results
 
-```
-Give the example
-```
+Position plots: The red dot indicates the true position given by the navigation blog, and the black curves are the contours of the posterior probability distribution at the 68%, 95%, and 99% probability levels, as determined via the MCMC simulation.
 
-And repeat
+A classical positional fix from two star sightings:
 
-```
-until finished
-```
 
-End with an example of getting some data out of the system or using it for a little demo
+A positional fix from 13 lower-limb Sun sightings, taken in quick succession (~35 minutes):
 
-## Running the tests
 
-Explain how to run the automated tests for this system
 
-### Break down into end to end tests
+A positional fix from six lower- and upper-limb Sum sightings, taken in two sets separated by 4 hours:
 
-Explain what these tests test and why
 
-```
-Give an example
-```
+Positional fix as a function of added artificial noise magnitude:
 
-### And coding style tests
 
-Explain what these tests test and why
+Evolution of MCMC chains per simulation step:
 
-```
-Give an example
-```
-
-## Deployment
-
-Add additional notes about how to deploy this on a live system
-
-## Built With
-
-* [Dropwizard](http://www.dropwizard.io/1.0.2/docs/) - The web framework used
-* [Maven](https://maven.apache.org/) - Dependency Management
-* [ROME](https://rometools.github.io/rome/) - Used to generate RSS Feeds
-
-## Contributing
-
-Please read [CONTRIBUTING.md](https://gist.github.com/PurpleBooth/b24679402957c63ec426) for details on our code of conduct, and the process for submitting pull requests to us.
-
-## Versioning
-
-We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/your/project/tags). 
-
-## Authors
-
-* **Billie Thompson** - *Initial work* - [PurpleBooth](https://github.com/PurpleBooth)
-
-See also the list of [contributors](https://github.com/your/project/contributors) who participated in this project.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
-
-## Acknowledgments
-
-* Hat tip to anyone who's code was used
-* Inspiration
-* etc
+This is a nice visualization of the 
