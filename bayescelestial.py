@@ -1,24 +1,26 @@
+import copy
 import datetime as dt
-import scipy.stats
-from astropy import units as u
-from astropy.coordinates import Angle
-from astropy.coordinates import Longitude
+import emcee
 import ephem
 import numpy as np
 import math
 import scipy.optimize
-import emcee
-from datetime import datetime
+import scipy.stats
 import matplotlib.pyplot as plt
-import copy
-from mpl_toolkits.basemap import Basemap
+
+
+from astropy import units as u
+from astropy.coordinates import Angle
+from astropy.coordinates import Longitude
+
 import matplotlib.cm as cm
 import matplotlib.mlab as mlab
-import cProfile, pstats, io
+from mpl_toolkits.basemap import Basemap
 
-
-
-# class constructor, for future use -- not implemented yet. will be much cleaner.
+# Define a Sight class. This is used to represent an actual sighting taken
+# from a marine sextant, along with the date, time, index error, temperature,
+# etc., which are used to adjust the sighting to get the true position in the
+# celestial sphere.
 class Sight:
     def __init__(self, body, date, time, Hs, WE, IE, height, temperature, pressure, DRv, DRbearing, latA, lonA):
         self.body = body
@@ -43,6 +45,7 @@ class Sight:
         self.GHA = None
         self.DEC = None
         self.compute_GHA_DEC()
+        
         # this method will update the corrections to the sextant sighting.
         # it is useful to segment the function this way so that when generating theoretical sights and
         # changing the lat/lon to be artificial values, a single method will update the rest of the Sight
@@ -69,13 +72,22 @@ class Sight:
             self.HP = Angle('0.0024d')
             return
         if self.body == 'MoonLL' or self.body == 'MoonUL':
-            self.HP = Angle()
+            # calculate the moons horizontal paralax
+            s = ephem.Moon()
+            date = self.datetime.strftime('%Y/%m/%d')
+            time = self.datetime.strftime('%H:%M:%S')
+            date_string = date + ' ' + time
+            s.compute(date_string, epoch=date_string)
+            deg = 180.0/np.pi*(s.radius/0.272805950305)
+            self.HP = Angle(deg, unit=u.deg)
+            print('Moon HP is {}'.format(self.HP))
+            return
 
         self.HP = Angle('0.0d')
         return
 
     def parallax_in_altitude_correction(self):
-        self.parallax_corr = self.HP*np.cos(self.Ha.deg/180.0*np.pi)*(1.-(np.sin(self.latA.deg/180.0*np.pi)**2.0)/297.0)
+        self.parallax_corr = self.HP*np.cos(self.Ha.rad)*(1.-(np.sin(self.latA.rad)**2.0)/297.0)
         return
 
     def semidiameter_correction(self):
@@ -97,6 +109,26 @@ class Sight:
                 return
             else:
                 self.SD_corr = Angle('-{:.3f}d'.format(sds))
+                return
+        if self.body == 'MoonLL' or self.body == 'MoonUL':
+            s = ephem.Moon()
+            obs = ephem.Observer()
+            # format strings from datetime object
+            date = self.datetime.strftime('%Y/%m/%d')
+            time = self.datetime.strftime('%H:%M:%S')
+            date_string = date + ' ' + time
+            obs.date = date_string
+
+            s.compute(date_string, epoch=date_string)
+            # compute SD of moon
+            sds = s.radius / ephem.pi * 180.0  # degrees of arc
+            if self.body == 'MoonLL':
+                self.SD_corr = Angle('{:.3f}d'.format(sds))
+                print('Moon SD correction is {}'.format(sds))
+                return
+            else:
+                self.SD_corr = Angle('-{:.3f}d'.format(sds))
+                print('Moon SD correction is -{}'.format(sds))
                 return
 
         self.SD_corr = Angle('0d')
@@ -121,42 +153,45 @@ class Sight:
     def compute_GHA_DEC(self):
         # sun
         if self.body == 'SunLL' or self.body == 'SunUL':
-            s = ephem.Sun()
+            celestial_body = ephem.Sun()
         # insert moon here
         elif self.body == 'MoonLL' or self.body == 'MoonUL':
-            s = ephem.Moon()
+            celestial_body = ephem.Moon()
         # planets
         elif self.body == 'Mars':
-            s = ephem.Mars()
+            celestial_body = ephem.Mars()
         elif self.body == 'Venus':
-            s = ephem.Venus()
+            celestial_body = ephem.Venus()
         elif self.body == 'Jupiter':
-            s = ephem.Jupiter()
+            celestial_body = ephem.Jupiter()
         elif self.body == 'Saturn':
-            s = ephem.Saturn()
+            celestial_body = ephem.Saturn()
         elif self.body == 'Uranus':
-            s = ephem.Uranus()
+            celestial_body = ephem.Uranus()
         elif self.body == 'Mercury':
-            s = ephem.Mercury()
+            celestial_body = ephem.Mercury()
         # anything else must be a star, and its body can be interpreted via the string argument in ephem.star('')
         else:
-            s = ephem.star(self.body)
+            celestial_body = ephem.star(self.body)
 
         obs = ephem.Observer()
         # disable a correction for pressure, since we do this later
         obs.pressure = 0
+
         # format strings from datetime object
         date = self.datetime.strftime('%Y/%m/%d')
         time = self.datetime.strftime('%H:%M:%S')
         date_string = date + ' ' + time
         obs.date = date_string
 
-        s.compute(date_string, epoch=date_string)
+        celestial_body.compute(date_string, epoch=date_string)
 
-        deg = ephem.degrees(obs.sidereal_time() - s.g_ra).norm
+        deg = ephem.degrees(obs.sidereal_time() - celestial_body.g_ra).norm
         ghas = nadeg(deg)
-        deg = s.g_dec
+        deg = celestial_body.g_dec
         decs = nadeg(deg)
+
+        # convert GHA and DEC to Angle objects
         self.GHA = Angle(ghas, unit=u.deg)
         self.DEC = Angle(decs, unit=u.deg)
         print('GHA and DEC for body {} are {:.3f} / {:.3f}'.format(self.body, self.GHA.deg, self.DEC.deg))
@@ -164,7 +199,8 @@ class Sight:
 
     def est_longitude(self):
         # use a root-finding algorithm to compute the longitude based on an
-        # assumed latitude. here, the estimated longitude is to start the root-finding algorithm
+        # assumed latitude. here, the estimated longitude is to start the
+        # root-finding algorithm
 
         print('Finding Zo for true sextant angle of ' + '{:.3f}'.format(self.Ho) + ' degrees...')
         print('GHA and DEC are {} {}'.format(self.GHA.deg, self.DEC.deg))
@@ -178,11 +214,13 @@ class Sight:
                 lower_H, upper_H))
 
         fz = lambda x: (compute_Hc(self.latA, Angle(x, unit=u.deg), self.GHA, self.DEC).deg - self.Ho.deg)
-        print('fz(a) is {:.3f}, fz(b) is {:.3f}'.format(fz(self.lonA.deg-2),fz(self.lonA.deg+2)))
-        # spn_out = scipy.optimize.newton(fz, lonA.deg, maxiter=200)
-        sp_out = scipy.optimize.brentq(fz, self.lonA.deg - 2.0, self.lonA.deg + 2.0, maxiter=100)
 
-        # sp_out = scipy.optimize.minimize_scalar(fz, bracket=[lonA.deg-2.0,lonA.deg+2.0], method='brent', tol=1.48e-06)
+        # Diagnostic-- Check that the function fz contains a root between
+        # points a and b.
+        print('fz(a) is {:.3f}, fz(b) is {:.3f}'.format(fz(self.lonA.deg-2), fz(self.lonA.deg+2)))
+
+        sp_out = scipy.optimize.brentq(fz, self.lonA.deg-2.0, self.lonA.deg+2.0, maxiter=100)
+
         self.est_lon = Angle(sp_out, unit=u.deg)
         print('est lon is now {}'.format(self.est_lon))
         return
@@ -354,16 +392,16 @@ def get_Ho_altitudes(sights):
     return ho
 
 def fsight(x, ghadec_vals, td, Ho_obs):
-    sigma_s = 1/60.0/180.0*np.pi
+    sigma_s = 1.0/60.0/180.0*np.pi
     y_theory = Ho_predict(ghadec_vals, td, x[0], x[1], x[2], x[3])
     y_data = Ho_obs
 
-    chi = np.power(y_theory - y_data,2.0)/(2.0*sigma_s**2.0)
+    chi = np.power(y_theory - y_data, 2.0)/(2.0*sigma_s**2.0)
 
     return np.sum(chi)
 
 def prior_logP(params, parrange):
-    if np.any(params < parrange[0,:]) or np.any(params > parrange[1,:]):
+    if np.any(params < parrange[0, :]) or np.any(params > parrange[1, :]):
         return -np.inf
     else:
         bearing_prior = -(params[3]-270.0/180.0*np.pi)**2.0/(2.0*((20.0/180.0*np.pi)**2.0))
@@ -389,11 +427,11 @@ def fsight_logp(x, parrange, ghadec_vals, td, Ho_obs, sigma_s):
     #logp = np.sum(np.log( (1.0 - np.exp(-Rk**2.0 / 2.0))/ (Rk**2.0))) + logprior
 
     # this is the good data/bad data model of Box and Tiao (1978), from Sivia's 'Data Analysis'
-    beta = 0.2 # calibrated from initial data
+    beta = 0.1 # calibrated from initial data
     gamma = 4.8 # calibrated from initial data
     Rk = (y_theory - y_data) / sigma_s
-    logp = np.sum(np.log(beta/gamma*np.exp(-np.power(Rk,2.0)/(2.0*np.power(gamma,2.0))) +
-                         (1-beta)*np.exp(-np.power(Rk,2.0)/2))) + logprior
+    logp = np.sum(np.log(beta/gamma*np.exp(-np.power(Rk, 2.0)/(2.0*np.power(gamma, 2.0))) +
+                         (1.0-beta)*np.exp(-np.power(Rk, 2.0)/2))) + logprior
     return logp
 
 def HPD_SIM(data, alpha):
@@ -557,8 +595,8 @@ def plot_position_estimate_and_contours(sights, sampler):
     std_lat = np.std(sampler.chain[:, :, 0].flatten() * 180.0 / np.pi)
     std_lon = np.std(sampler.chain[:, :, 1].flatten() * 180.0 / np.pi)
     # compute a lat/lon range for the map plot, with a minimum span of +- 45 arcminutes
-    lat_span = np.max(np.array((std_lat * 5, 45 / 60.0)))
-    lon_span = np.max(np.array((std_lon * 5, 45 / 60.0)))
+    lat_span = np.max(np.array((std_lat * 7, 45 / 60.0)))
+    lon_span = np.max(np.array((std_lon * 7, 45 / 60.0)))
 
     # adjust the aspect ratio for a better plot
     if lat_span/lon_span > 2.0:
@@ -588,11 +626,11 @@ def plot_position_estimate_and_contours(sights, sampler):
         [sampler.chain[:, :, 1].flatten() * 180.0 / np.pi, sampler.chain[:, :, 0].flatten() * 180.0 / np.pi],
         bw_method=0.4)
     # create a grid
-    lonarray = np.linspace(mean_lon - 6 * std_lon, mean_lon + 6 * std_lon, 200)
-    latarray = np.linspace(mean_lat - 6 * std_lat, mean_lat + 6 * std_lat, 200)
+    lonarray = np.linspace(mean_lon - 8 * std_lon, mean_lon + 8 * std_lon, 300)
+    latarray = np.linspace(mean_lat - 8 * std_lat, mean_lat + 8 * std_lat, 300)
     lons, lats = np.meshgrid(lonarray, latarray)
 
-    # find the 68% and 95% scores at percentiles
+    # find the 68%, 95%, and 99% scores at percentiles
     sarray = scipy.stats.scoreatpercentile(gkde(gkde.resample(1000)), [1, 5, 32])
 
     z = np.array(gkde.evaluate([lons.flatten(), lats.flatten()])).reshape(lons.shape)
@@ -600,17 +638,19 @@ def plot_position_estimate_and_contours(sights, sampler):
 
     map.contour(x, y, z, sarray, linewidths=2, alpha=1.0, colors='k')
     # convert lat/lons to x,y points
-    # x, y = map(sampler.chain[0:100, 0:20, 1].flatten() * 180.0 / np.pi, sampler.chain[0:100, 0:20, 0].flatten() * 180.0 / np.pi)
+    # x, y = map(sampler.chain[0:100, 0:20, 1].flatten() * 180.0 / np.pi,
+    # sampler.chain[0:100, 0:20, 0].flatten() * 180.0 / np.pi)
     # map.scatter(x, y, 3, marker='o', color='k')
     # plot the true value, which relies in the first Sight's nominal lon/lat
     x, y = map(sights[0].lonA.deg, sights[0].latA.deg)
     map.scatter(x, y, s=50, marker='o', color='r')
-    plt.title('Position at {} is {} ± {}  /  {} ± {} '.format(sights[0].datetime.strftime("%Y/%m/%d -- %H:%M:%S"),
-                                                                nadeg(mean_lat / 180 * np.pi),
-                                                                nadeg(2.0 * std_lat / 180 * np.pi),
-                                                                nadeg(mean_lon / 180 * np.pi),
-                                                                nadeg(2.0 * std_lon / 180 * np.pi)),
-              fontsize=12)
+    plt.title('Position at {} is {} ± {}  /  {} ± {} '.format(
+        sights[0].datetime.strftime("%Y/%m/%d -- %H:%M:%S"),
+        nadeg(mean_lat / 180 * np.pi),
+        nadeg(2.0 * std_lat / 180 * np.pi),
+        nadeg(mean_lon / 180 * np.pi),
+        nadeg(2.0 * std_lon / 180 * np.pi)),
+        fontsize=12)
     plt.show()
     return
 
@@ -621,10 +661,9 @@ def positional_fix_vs_sextant_error(input_sights):
     # sights - should be an input list of Sight objects
     #
 
-    # array of noise magnitudes, in arcseconds
-    noise_magnitudes = np.array((5.0, 30.0, 60.0, 120.0, 240.0))
-    noise_magnitudes = np.array((30.0, 60.0, 120.0, 180.0))
-    noise_magnitudes = np.array((5.0,))
+    # array of noise magnitudes, in arcseconds -- adjust this for adding different amounts of noise
+    #noise_magnitudes = np.array((1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0))
+    noise_magnitudes = np.array((0.01,))
     # prepare an array to store the results
     results = np.zeros((np.size(noise_magnitudes), 5))
 
@@ -670,84 +709,82 @@ def positional_fix_vs_sextant_error(input_sights):
 
 if __name__ == "__main__":
     # 'database' of sightings for reduction into a single lat/long pair + course speed/heading
-    #pr = cProfile.Profile()
-    #pr.enable()
     # 21-Feb-2015
     db_sights = """\
-        Venus,2015/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d4m,-25d36m
-        Sirius,2015/02/21,20:25:27,45d32.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d4m,-25d36m
+        Venus,2015/02/21,20:15:13,21d9.5m,0.0,2.3m,3.05,25,1010,5.5,270d,17d0m,-25d50m
+        Sirius,2015/02/21,20:25:27,45d32.5m,0.0,2.3m,3.05,25,1010,5.5,270d,16d59m,-25d51m
         """
     # 22-Feb-2015
-    db_sights = """\
-    SunLL,2015/02/22,12:11:17,51d07.3m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
-    SunLL,2015/02/22,12:12:13,51d22.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
-    SunLL,2015/02/22,12:13:08,51d29.8m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
-    SunLL,2015/02/22,12:13:55,51d39.5m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
-    SunLL,2015/02/22,12:15:05,51d48.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d29m
-    SunLL,2015/02/22,14:21:17,62d42.3m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
-    SunLL,2015/02/22,14:22:23,62d34.8m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
-    SunLL,2015/02/22,14:23:11,62d36.4m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
-    """
+    # db_sights = """\
+    # SunLL,2015/02/22,12:11:17,51d07.3m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
+    # SunLL,2015/02/22,12:12:13,51d22.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
+    # SunLL,2015/02/22,12:13:08,51d29.8m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
+    # SunLL,2015/02/22,12:13:55,51d39.5m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d28m
+    # SunLL,2015/02/22,12:15:05,51d48.1m,0.0,2.0m,2.44,25,1010,5.5,270d,16d44m,-27d29m
+    # SunLL,2015/02/22,14:21:17,62d42.3m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
+    # SunLL,2015/02/22,14:22:23,62d34.8m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
+    # SunLL,2015/02/22,14:23:11,62d36.4m,0.0,2.1m,3.05,25,1010,5.5,270d,16d42m,-27d53m
+    # """
 
     # 24-Feb-2015
-    db_sights = """\
-        SunLL,2015/02/24,12:11:13,48d7.5m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
-        SunLL,2015/02/24,12:12:15,48d22.3m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
-        SunLL,2015/02/24,12:13:08,48d29.9m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
-        SunUL,2015/02/24,16:08:15,54d16.8m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-        SunUL,2015/02/24,16:09:27,54d4.2m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-        SunUL,2015/02/24,16:11:05,53d46.0m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-        """
+    #db_sights = """\
+    #     SunLL,2015/02/24,12:11:13,48d7.5m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
+    #     SunLL,2015/02/24,12:12:15,48d22.3m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
+    #     SunLL,2015/02/24,12:13:08,48d29.9m,0.0,1.9m,2.44,25,1010,5.5,270d,16d13m,-33d5m
+    #     SunUL,2015/02/24,16:08:15,54d16.8m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+    #     SunUL,2015/02/24,16:09:27,54d4.2m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+    #     SunUL,2015/02/24,16:11:05,53d46.0m,0.0,2.1m,3.05,25,1010,5.5,270d,16d13m,-33d5m
+    #     """
 
     # 25-Feb-2015
-    db_sights = """\
-            SunLL,2015/02/25,14:20:47,63d53.4m,0.0,1.8m,3.05,25,1010,5.5,270d,16d38m,-35d24m
-            SunLL,2015/02/25,14:26:40,64d1.3m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:29:08,64d4.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:30:45,64d7.1m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:32:16,64d7.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:33:27,64d7.0m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:34:39,64d7.5m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:37:46,64d7.1m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:40:13,64d4.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:42:53,64d1.7m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:44:16,64d1.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:48:26,63d54m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            SunLL,2015/02/25,14:55:31,63d35.4m,0.0,1.8m,3.05,25,1010,5.5,270d,16d13m,-33d5m
-            """
+    #db_sights = """\
+    #        SunLL,2015/02/25,14:20:47,63d53.4m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:26:40,64d1.3m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:29:08,64d4.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:30:45,64d7.1m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:32:16,64d7.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:33:27,64d7.0m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:34:39,64d7.5m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:37:46,64d7.1m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:40:13,64d4.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:42:53,64d1.7m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:44:16,64d1.9m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:48:26,63d54m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        SunLL,2015/02/25,14:55:31,63d35.4m,0.0,1.8m,3.05,25,1010,5.5,270d,16d35m,-35d24m
+    #        """
 
     # 26-Feb-2015
-    db_sights = """\
-            Altair,2015/02/26,08:25:16,38d15.7m,0.0,2.0m,3.05,25,1010,5.5,270d,16d21m,-37d0m
-            """
+    # db_sights = """\
+    #         Altair,2015/02/26,08:25:16,38d15.7m,0.0,2.0m,3.05,25,1010,5.5,270d,16d21m,-37d0m
+    #         """
     # 26-Feb-2015 -- using dead reckoning with a subsequent sun sight to determine this position
-    db_sights = """\
-            Altair,2015/02/26,08:25:16,38d15.7m,0.0,2.0m,3.05,25,1010,5.5,270d,16d21m,-37d0m
-            SunUL,2015/02/27,14:48:17,65d58.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d21m,-37d0m
-            """
+    # db_sights = """\
+    #         Altair,2015/02/26,08:25:16,38d15.7m,0.0,2.0m,3.05,25,1010,5.5,270d,16d21m,-37d0m
+    #         SunUL,2015/02/27,14:48:17,65d58.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d21m,-37d0m
+    #         """
     # 27-Feb-2015 -- using only the sight from 27 Feb (i.e. no dead reckoning)
-    db_sights = """\
-            SunUL,2015/02/27,14:48:17,65d58.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d05m,-40d8m
-            """
+    # db_sights = """\
+    #         SunUL,2015/02/27,14:48:17,65d58.2m,0.0,1.8m,3.05,25,1010,5.5,270d,16d05m,-40d8m
+    #         """
     # 28-Feb-2015
-    db_sights = """\
-            SunLL,2015/02/28,12:57:13,50d4.7m,0.0,1.9m,3.05,25,1010,6,270d,16d48m,-42d36m
-            SunLL,2015/02/28,16:27:08,57d56.4m,0.0,1.8m,3.05,25,1010,6,270d,16d48m,-42d36m
-            """
+    # db_sights = """\
+    #         SunLL,2015/02/28,12:57:13,50d4.7m,0.0,1.9m,3.05,25,1010,6,270d,16d48m,-42d36m
+    #         SunLL,2015/02/28,16:27:08,57d56.4m,0.0,1.8m,3.05,25,1010,6,270d,16d48m,-42d36m
+    #         """
     # 01-Mar-2015
-    db_sights = """\
-            SunUL,2015/03/01,14:00:05,60d1.7m,0.0,2.0m,3.66,25,1010,6,270d,16d48m,-45d8m
-            SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d8m
-            """
+    # db_sights = """\
+    #         SunUL,2015/03/01,14:00:05,60d1.7m,0.0,2.0m,3.66,25,1010,6,270d,16d48m,-45d8m
+    #         SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d8m
+    #         """
     # 02-Mar-2015 -- including previous day's sun sights -- seems to be a significant error in these sights
     # The second sight: SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d08m
     # is bad -- the location data is wrong.
-    db_sights = """\
-                SunUL,2015/03/01,14:00:05,60d1.7m,0.0,2.0m,3.66,25,1010,6,270d,16d48m,-45d8m
-                SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d08m
-                SunUL,2015/03/02,11:10:54,24d26.1m,0.0,2.0m,3.66,25,1010,6,270d,15d26m,-47d16m
-                SunLL,2015/03/02,16:38:10,60d41.7m,0.0,1.9m,3.66,25,1010,6,270d,15d23m,-47d56m
-                """
+    # db_sights = """\
+    #             SunUL,2015/03/01,14:00:05,60d1.7m,0.0,2.0m,3.66,25,1010,6,270d,16d48m,-45d8m
+    #             SunLL,2015/03/01,17:47:59,44d28.5m,0.0,2.2m,3.66,25,1010,6,270d,16d48m,-45d08m
+    #             SunUL,2015/03/02,11:10:54,24d26.1m,0.0,2.0m,3.66,25,1010,6,270d,15d26m,-47d16m
+    #             SunLL,2015/03/02,16:38:10,60d41.7m,0.0,1.9m,3.66,25,1010,6,270d,15d23m,-47d56m
+    #             """
     # 02-Mar-2015 -- Including ONLY today's sights.
     # db_sights = """\
     #             SunUL,2015/03/02,11:10:54,24d26.1m,0.0,2.0m,3.66,25,1010,6,270d,15d26m,-47d16m
@@ -764,33 +801,45 @@ if __name__ == "__main__":
     #             SunUL,2015/03/04,17:15:17,59d07.1m,0.0,2.2m,3.05,25,1010,6,270d,14d56m,-52d46m
     #             """
     # 05-Mar-2015
-    db_sights = """\
-                SunLL,2015/03/05,14:32:49,61d25.6m,0.0,1.8m,3.05,25,1010,6,270d,14d46m,-54d42m
-                SunLL,2015/03/05,18:40:21,43d18.7m,0.0,2.2m,2.44,25,1010,6,270d,14d45m,-55d14m
-                """
+    # db_sights = """\
+    #             SunLL,2015/03/05,14:32:49,61d25.6m,0.0,1.8m,3.05,25,1010,6,270d,14d46m,-54d42m
+    #             SunLL,2015/03/05,18:40:21,43d18.7m,0.0,2.2m,2.44,25,1010,6,270d,14d45m,-55d14m
+    #             """
     # 06-Mar-2015 -- morning sights only
     # without:                    Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-    db_sights = """\
-                Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-                Dubhe,2015/03/06,9:44:10,14d26.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-                Arcturus,2015/03/06,9:49:53,50d59.8m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-                """
+    # db_sights = """\
+    #             Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+    #             Dubhe,2015/03/06,9:44:10,14d26.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+    #             Arcturus,2015/03/06,9:49:53,50d59.8m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+    #             """
     # 06-Mar-2015 -- complete set of all six sights -- minus Acamar:
     #  Acamar,2015/03/06,22:49:53,25d56.8m,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
     # Could not get this sight to work -- had to manually add its data from Hipparchos DB to PyEphem, but
     # the sight I got out was a few degrees off.
-    db_sights = """\
-            Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-            Dubhe,2015/03/06,9:44:10,14d26.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-            Arcturus,2015/03/06,9:49:53,50d59.8m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-            Venus,2015/03/06,22:05:53,28d46.1,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
-            Sirius,2015/03/06,22:10:07,51d43.6m,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
-            """
-    db_sights = """\
-            Kochab,2015/03/07,9:48:11,28d8.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-            Antares,2015/03/07,9:55:42,49d58.3m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-            MoonLL,2015/03/07,10:05:11,14d29.0m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
-            """
+    # db_sights = """\
+    #         Zubenelgenubi,2015/03/06,9:40:16,47d41.5m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+    #         Dubhe,2015/03/06,9:44:10,14d26.1m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+    #         Arcturus,2015/03/06,9:49:53,50d59.8m,0.0,1.9m,3.05,25,1010,6,270d,14d42m,-56d32m
+    #         Venus,2015/03/06,22:05:53,28d46.1,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
+    #         Sirius,2015/03/06,22:10:07,51d43.6m,0.0,2.1m,2.44,25,1010,6,270d,14d40m,-57d44m
+    #         """
+    # 07-Mar-2015
+    # db_sights = """\
+    #         Kochab,2015/03/07,9:48:11,28d8.1m,0.0,1.8m,3.05,25,1010,6,270d,14d31m,-58d43m
+    #         Antares,2015/03/07,9:55:42,49d58.3m,0.0,1.8m,3.05,25,1010,6,270d,14d31m,-58d43m
+    #         MoonUL,2015/03/07,10:05:11,14d29.0m,0.0,1.8m,3.05,25,1010,6,270d,14d31m,-58d44m
+    #         """
+    # 08-Mar-2015
+    #db_sights = """\
+    #            Dubhe,2015/03/08,9:52:36,13d59.9m,0.0,2.3m,3.05,25,1010,6,270d,14d08m,-60d48m
+    #            MoonLL,2015/03/08,10:01:13,26d19.2m,0.0,2.3m,3.05,25,1010,6,270d,14d08m,-60d48m
+    #            """
+
+    # http://msi.nga.mil/MSISiteContent/StaticFiles/NAV_PUBS/APN/Chapt-20.pdf
+    # db_sights = """\
+    #             Kochab,1995/05/17,6:07:43,47d19.1m,0.0,-2.1m,14.63,25,1010,6,90d,39d,-157d10m
+    #             Spica,1995/05/17,6:11:26,32d34.8m,0.0,-2.1m,14.63,25,1010,6,90d,39d,-157d8m
+    #             """
     # db_sights = """\
     #         Arcturus,2015/02/23,07:54:42,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
     #         Saturn,2015/02/23,8:04:34,54d34.8m,0.0,2.3m,3.05,25,1010,5.5,270d,16d25m,-28d47m
@@ -817,9 +866,9 @@ if __name__ == "__main__":
     print(est_Hs_out)
 
     ## change the sights to be theoretically perfect
-    #sights = generate_sights_positional(sights)
+    sights = generate_sights_positional(sights)
 
-    # run simulation
+    # run simulation -- will automatically loop to add artificial noise
     positional_fix_vs_sextant_error(sights)
 
 
@@ -834,8 +883,8 @@ if __name__ == "__main__":
     Ho_obs = get_Ho_altitudes(sights)
 
     # start with MCMC simulation
-    parrange = np.zeros((2,4))
-    parrange[0,:] = np.array([sights[0].latA.rad-5/180*np.pi, sights[0].lonA.rad-5/180*np.pi, 0.0, 200/180.0*np.pi])
+    parrange = np.zeros((2, 4))
+    parrange[0, :] = np.array([sights[0].latA.rad-5/180*np.pi, sights[0].lonA.rad-5/180*np.pi, 0.0, 200/180.0*np.pi])
     parrange[1, :] = np.array([sights[0].latA.rad + 5 / 180 * np.pi, sights[0].lonA.rad + 5/ 180 * np.pi, 14, 360/180.0*np.pi])
 
     # prepare MCMC walkers using emcee
@@ -852,18 +901,19 @@ if __name__ == "__main__":
         uidx = p0[i] > parrange[1, :]
         p0[i][uidx] = parrange[1, uidx]
 
-    #sigma_s = 0.5/60
-    #fslambda = lambda x: fsight_logp(x, parrange, ghadec_vals, td, Ho_obs, sigma_s)
-
-
+    # DEPRECATED -- code below mostly now included in subfunction
+    # sigma_s = 0.5/60
+    # fslambda = lambda x: fsight_logp(x, parrange, ghadec_vals, td, Ho_obs, sigma_s)
+    #
+    #
     # # Ho = Hc * 180.0 / np.pi  # convert to degrees
     # sampler = emcee.EnsembleSampler(nwalkers, ndim, fslambda)
     # # burnin using emcee
-    # [pos, lnprobs, rstate] = sampler.run_mcmc(p0, 50)
+    # [pos, lnprobs, rstate] = sampler.run_mcmc(p0, 500)
     #
     # # sample from the posterior using emcee
     # sampler.reset()
-    # [pos, lnprobs, rstate] = sampler.run_mcmc(pos, 50, thin=2)
+    # [pos, lnprobs, rstate] = sampler.run_mcmc(pos, 2500, thin=2)
     #
     #
     # fig, axes = plt.subplots(7, 1, sharex=True, figsize=(8, 9))
@@ -968,9 +1018,3 @@ if __name__ == "__main__":
     # print('----------Parameter Lon_Out----------')
     # print('{} = {} +- {}'.format('lon out', nadeg(est_mean/180*np.pi), nadeg(est_interval/180*np.pi)))
     # print('2x std is {}'.format(nadeg(2.0*np.std(chain_lon.flatten()))))
-    # pr.disable()
-    # s = io.StringIO()
-    # sortby = 'cumulative'
-    # ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-    # ps.print_stats()
-    # print(s.getvalue())
